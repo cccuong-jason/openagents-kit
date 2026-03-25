@@ -1,0 +1,36 @@
+version: 1
+workspace: openagents-kit
+profiles:
+  personal-client:
+    description: Personal client profile.
+    memory:
+      provider: cortex
+      endpoint: https://personal.example.com
+      scope: client
+    tools:
+      codex:
+        enabled: true
+        guidance_packs:
+          - shared-memory
+      claude:
+        enabled: true
+        guidance_packs:
+          - shared-memory
+      gemini:
+        enabled: true
+        guidance_packs:
+          - shared-memory
+  company-team:
+    extends: personal-client
+    description: Company team profile.
+    memory:
+      provider: cortex
+      endpoint: https://company.example.com
+      scope: team
+    tools:
+      codex:
+        enabled: true
+        guidance_packs:
+          - shared-memory
+          - team-handoff
+

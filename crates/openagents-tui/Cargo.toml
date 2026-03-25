@@ -1,0 +1,20 @@
+[package]
+name = "openagents-tui"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "openagents-kit"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+openagents-adapters = { path = "../openagents-adapters" }
+openagents-core = { path = "../openagents-core" }
+ratatui.workspace = true
+crossterm.workspace = true
+serde_yaml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

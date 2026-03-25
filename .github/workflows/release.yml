@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_name: openagents-kit-linux
+            binary_name: openagents-kit
+          - os: windows-latest
+            asset_name: openagents-kit-windows.exe
+            binary_name: openagents-kit.exe
+          - os: macos-latest
+            asset_name: openagents-kit-macos
+            binary_name: openagents-kit
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release -p openagents-tui --all-features
+
+      - name: Stage release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "target/release/${{ matrix.binary_name }}" "dist/${{ matrix.asset_name }}"
+          else
+            cp "target/release/${{ matrix.binary_name }}" "dist/${{ matrix.asset_name }}"
+          fi
+
+      - name: Upload release asset to workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*

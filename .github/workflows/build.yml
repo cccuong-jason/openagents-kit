@@ -1,0 +1,53 @@
+name: Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    tags-ignore:
+      - "v*"
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release -p openagents-tui --all-features
+
+      - name: Package binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          binary="openagents-kit"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp target/release/openagents-kit.exe "dist/${binary}-windows.exe"
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            cp target/release/openagents-kit "dist/${binary}-macos"
+          else
+            cp target/release/openagents-kit "dist/${binary}-linux"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openagents-kit-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error

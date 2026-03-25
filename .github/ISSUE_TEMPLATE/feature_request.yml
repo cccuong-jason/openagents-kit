@@ -1,0 +1,25 @@
+name: Feature request
+description: Suggest an improvement to the scaffold, TUI, or adapter system.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What would you like to add or improve?
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What pain point does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: Include any implementation ideas or constraints.
+

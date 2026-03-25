@@ -1,0 +1,11 @@
+[package]
+name = "openagents-adapters"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+openagents-core = { path = "../openagents-core" }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
