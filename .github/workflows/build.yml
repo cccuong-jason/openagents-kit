@@ -14,12 +14,28 @@ env:
 
 jobs:
   build:
-    name: Build (${{ matrix.os }})
+    name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset_name: openagents-kit-x86_64-unknown-linux-gnu
+            binary_name: openagents-kit
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_name: openagents-kit-x86_64-pc-windows-msvc.exe
+            binary_name: openagents-kit.exe
+          - os: macos-13
+            target: x86_64-apple-darwin
+            asset_name: openagents-kit-x86_64-apple-darwin
+            binary_name: openagents-kit
+          - os: macos-14
+            target: aarch64-apple-darwin
+            asset_name: openagents-kit-aarch64-apple-darwin
+            binary_name: openagents-kit
 
     steps:
       - name: Checkout
@@ -27,30 +43,25 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
       - name: Build release binary
-        run: cargo build --release -p openagents-tui --all-features
+        run: cargo build --release --target ${{ matrix.target }} -p openagents-tui --all-features
 
       - name: Package binary
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist
-          binary="openagents-kit"
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cp target/release/openagents-kit.exe "dist/${binary}-windows.exe"
-          elif [ "${{ runner.os }}" = "macOS" ]; then
-            cp target/release/openagents-kit "dist/${binary}-macos"
-          else
-            cp target/release/openagents-kit "dist/${binary}-linux"
-          fi
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "dist/${{ matrix.asset_name }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
-          name: openagents-kit-${{ matrix.os }}
-          path: dist/*
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
           if-no-files-found: error
