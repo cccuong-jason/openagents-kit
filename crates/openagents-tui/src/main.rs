@@ -850,7 +850,7 @@ mod tests {
 
         let written = fs::read_to_string(output_root.join("codex/config.toml"))
             .expect("codex output should be written");
-        assert!(written.contains("[mcp_servers.cortex]"));
+        assert!(written.contains("Merge this snippet into ~/.codex/config.toml"));
     }
 
     #[test]

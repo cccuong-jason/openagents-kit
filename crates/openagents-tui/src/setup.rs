@@ -121,8 +121,14 @@ pub fn selection_to_manifest(selection: &SetupSelection) -> WorkspaceManifest {
     };
 
     let (provider, endpoint) = match selection.memory_backend {
-        MemoryBackendPreset::Filesystem => ("filesystem", "./.openagents/memory"),
-        MemoryBackendPreset::Cortex => ("cortex", "https://memory.example.com"),
+        MemoryBackendPreset::Filesystem => (
+            "filesystem",
+            format!(
+                "./.openagents/memory/{}",
+                sanitize_workspace_name(&selection.workspace_name)
+            ),
+        ),
+        MemoryBackendPreset::Cortex => ("cortex", "https://memory.example.com".to_string()),
     };
 
     let mut tools = std::collections::BTreeMap::new();
@@ -150,7 +156,7 @@ pub fn selection_to_manifest(selection: &SetupSelection) -> WorkspaceManifest {
             extends: None,
             memory: MemoryConfig {
                 provider: provider.to_string(),
-                endpoint: endpoint.to_string(),
+                endpoint,
                 scope,
             },
             tools,
@@ -162,6 +168,23 @@ pub fn selection_to_manifest(selection: &SetupSelection) -> WorkspaceManifest {
         workspace: selection.workspace_name.clone(),
         profiles,
     }
+}
+
+fn sanitize_workspace_name(workspace_name: &str) -> String {
+    let mut sanitized = workspace_name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    while sanitized.contains("--") {
+        sanitized = sanitized.replace("--", "-");
+    }
+    sanitized.trim_matches('-').to_string()
 }
 
 pub fn write_manifest(path: &Path, selection: &SetupSelection) -> Result<()> {
@@ -235,6 +258,10 @@ mod tests {
 
         assert_eq!(manifest.workspace, "starter-workspace");
         assert_eq!(profile.memory.provider, "filesystem");
+        assert_eq!(
+            profile.memory.endpoint,
+            "./.openagents/memory/starter-workspace"
+        );
         assert_eq!(profile.memory.scope, ProfileScope::Team);
         assert!(profile.tools.contains_key(&ToolKind::Claude));
         assert!(profile.tools.contains_key(&ToolKind::Gemini));
