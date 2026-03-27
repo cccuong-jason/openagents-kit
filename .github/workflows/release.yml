@@ -13,20 +13,27 @@ permissions:
 
 jobs:
   release:
-    name: Release (${{ matrix.os }})
+    name: Release (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            asset_name: openagents-kit-linux
+            target: x86_64-unknown-linux-gnu
+            asset_name: openagents-kit-x86_64-unknown-linux-gnu
             binary_name: openagents-kit
           - os: windows-latest
-            asset_name: openagents-kit-windows.exe
+            target: x86_64-pc-windows-msvc
+            asset_name: openagents-kit-x86_64-pc-windows-msvc.exe
             binary_name: openagents-kit.exe
-          - os: macos-latest
-            asset_name: openagents-kit-macos
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            asset_name: openagents-kit-x86_64-apple-darwin
+            binary_name: openagents-kit
+          - os: macos-14
+            target: aarch64-apple-darwin
+            asset_name: openagents-kit-aarch64-apple-darwin
             binary_name: openagents-kit
 
     steps:
@@ -35,23 +42,21 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
       - name: Build release binary
-        run: cargo build --release -p openagents-tui --all-features
+        run: cargo build --release --target ${{ matrix.target }} -p openagents-tui --all-features
 
       - name: Stage release asset
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cp "target/release/${{ matrix.binary_name }}" "dist/${{ matrix.asset_name }}"
-          else
-            cp "target/release/${{ matrix.binary_name }}" "dist/${{ matrix.asset_name }}"
-          fi
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "dist/${{ matrix.asset_name }}"
 
       - name: Upload release asset to workflow artifacts
         uses: actions/upload-artifact@v7
@@ -65,6 +70,9 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
       - name: Download artifacts
         uses: actions/download-artifact@v8
         with:
@@ -73,4 +81,7 @@ jobs:
       - name: Create release and upload assets
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/**/*
+          files: |
+            dist/**/*
+            scripts/install.ps1
+            scripts/install.sh

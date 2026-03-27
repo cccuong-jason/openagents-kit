@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WorkspaceManifest {
     pub version: u32,
     pub workspace: String,
@@ -67,16 +67,18 @@ impl WorkspaceManifest {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Profile {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub extends: Option<String>,
     pub memory: MemoryConfig,
     #[serde(default)]
     pub tools: BTreeMap<ToolKind, ToolConfig>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ResolvedProfile {
     pub name: String,
     pub description: Option<String>,
@@ -84,14 +86,14 @@ pub struct ResolvedProfile {
     pub tools: BTreeMap<ToolKind, ToolConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
 pub struct MemoryConfig {
     pub provider: String,
     pub endpoint: String,
     pub scope: ProfileScope,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProfileScope {
     Client,
@@ -100,14 +102,14 @@ pub enum ProfileScope {
     Workspace,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
 pub struct ToolConfig {
     pub enabled: bool,
     #[serde(default)]
     pub guidance_packs: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ToolKind {
     Codex,
