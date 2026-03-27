@@ -74,6 +74,10 @@ enum Commands {
     Memory {
         #[arg(long)]
         profile: String,
+        #[arg(long, default_value = "text")]
+        format: MemoryFormatArg,
+        #[arg(long)]
+        ensure: bool,
     },
     Sync {
         #[arg(long)]
@@ -97,6 +101,12 @@ enum ToolArg {
     Codex,
     Claude,
     Gemini,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum MemoryFormatArg {
+    Text,
+    Json,
 }
 
 impl ToolArg {
@@ -255,7 +265,11 @@ fn main() -> Result<()> {
         }) => apply_profile(&cli.manifest, &profile, None, &output_root, dry_run),
         Some(Commands::Doctor { profile }) => doctor(&cli.manifest, profile.as_deref()),
         Some(Commands::Adapters) => list_adapters(),
-        Some(Commands::Memory { profile }) => memory(&cli.manifest, &profile),
+        Some(Commands::Memory {
+            profile,
+            format,
+            ensure,
+        }) => memory(&cli.manifest, &profile, format, ensure),
         Some(Commands::Setup {
             output_root,
             dry_run,
@@ -334,14 +348,111 @@ fn list_adapters() -> Result<()> {
     Ok(())
 }
 
-fn memory(manifest_path: &Path, profile_name: &str) -> Result<()> {
+fn memory(
+    manifest_path: &Path,
+    profile_name: &str,
+    format: MemoryFormatArg,
+    ensure: bool,
+) -> Result<()> {
+    let rendered = render_memory_details(manifest_path, profile_name, format, ensure)?;
+    println!("{rendered}");
+    Ok(())
+}
+
+fn render_memory_details(
+    manifest_path: &Path,
+    profile_name: &str,
+    format: MemoryFormatArg,
+    ensure: bool,
+) -> Result<String> {
     let manifest = load_manifest(manifest_path)?;
     let resolved = manifest.resolve_profile(profile_name)?;
-    println!(
-        "memory provider `{}` configured at {}",
-        resolved.memory.provider, resolved.memory.endpoint
-    );
-    Ok(())
+    let ensured_path = ensure_memory_store(manifest_path, &manifest.workspace, &resolved, ensure)?;
+
+    let rendered = match format {
+        MemoryFormatArg::Text => {
+            if let Some(path) = ensured_path {
+                format!(
+                    "memory provider `{}` configured at {}\nseeded local memory store: {}",
+                    resolved.memory.provider,
+                    resolved.memory.endpoint,
+                    path.display()
+                )
+            } else {
+                format!(
+                    "memory provider `{}` configured at {}",
+                    resolved.memory.provider, resolved.memory.endpoint
+                )
+            }
+        }
+        MemoryFormatArg::Json => serde_json::json!({
+            "workspace": manifest.workspace,
+            "profile": profile_name,
+            "provider": resolved.memory.provider,
+            "endpoint": resolved.memory.endpoint,
+            "scope": resolved.memory.scope,
+            "seeded": ensured_path.is_some(),
+            "seeded_path": ensured_path.map(|path| path.display().to_string()),
+        })
+        .to_string(),
+    };
+
+    Ok(rendered)
+}
+
+fn ensure_memory_store(
+    manifest_path: &Path,
+    workspace_name: &str,
+    profile: &openagents_core::ResolvedProfile,
+    ensure: bool,
+) -> Result<Option<PathBuf>> {
+    if !ensure || profile.memory.provider != "filesystem" {
+        return Ok(None);
+    }
+
+    let base_dir = manifest_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let endpoint_path = PathBuf::from(&profile.memory.endpoint);
+    let absolute_path = if endpoint_path.is_absolute() {
+        endpoint_path
+    } else {
+        base_dir.join(endpoint_path)
+    };
+
+    fs::create_dir_all(&absolute_path).with_context(|| {
+        format!(
+            "failed to create memory store at {}",
+            absolute_path.display()
+        )
+    })?;
+    fs::write(
+        absolute_path.join("README.md"),
+        format!(
+            "# OpenAgents Memory Store\n\nWorkspace: {workspace_name}\nProfile: {}\nProvider: {}\nEndpoint: {}\n",
+            profile.name, profile.memory.provider, profile.memory.endpoint
+        ),
+    )
+    .with_context(|| format!("failed to seed README in {}", absolute_path.display()))?;
+    fs::write(
+        absolute_path.join("memory.json"),
+        serde_json::json!({
+            "workspace": workspace_name,
+            "profile": profile.name,
+            "provider": profile.memory.provider,
+            "endpoint": profile.memory.endpoint,
+        })
+        .to_string(),
+    )
+    .with_context(|| {
+        format!(
+            "failed to seed memory metadata in {}",
+            absolute_path.display()
+        )
+    })?;
+
+    Ok(Some(absolute_path))
 }
 
 fn run_tui(manifest_path: &Path) -> Result<()> {
@@ -462,6 +573,9 @@ fn apply_setup(
     }
 
     write_manifest(manifest_path, selection)?;
+    let manifest = load_manifest(manifest_path)?;
+    let resolved = manifest.resolve_profile(selection.profile_preset.profile_name())?;
+    let _ = ensure_memory_store(manifest_path, &manifest.workspace, &resolved, true)?;
     apply_profile(
         manifest_path,
         selection.profile_preset.profile_name(),
@@ -790,7 +904,8 @@ mod tests {
     use clap::Parser;
     use tempfile::tempdir;
 
-    use crate::{Cli, Commands, ToolArg};
+    use crate::setup::{MemoryBackendPreset, ProfilePreset, SetupSelection};
+    use crate::{Cli, Commands, MemoryFormatArg, ToolArg};
 
     fn fixture_path() -> PathBuf {
         PathBuf::from(concat!(
@@ -863,5 +978,70 @@ mod tests {
             .expect("workspace manifest should exist");
         assert!(written.contains("starter-workspace"));
         assert!(written.contains("personal-client"));
+    }
+
+    #[test]
+    fn memory_command_can_seed_filesystem_memory_and_render_json() {
+        let temp = tempdir().expect("temp dir should exist");
+        let manifest_path = temp.path().join("workspace.yaml");
+        let selection = SetupSelection {
+            workspace_name: "starter-workspace".to_string(),
+            profile_preset: ProfilePreset::PersonalClient,
+            memory_backend: MemoryBackendPreset::Filesystem,
+            enabled_tools: vec![openagents_core::ToolKind::Codex],
+            warnings: Vec::new(),
+        };
+
+        crate::write_manifest(&manifest_path, &selection).expect("manifest write should succeed");
+
+        let rendered = crate::render_memory_details(
+            &manifest_path,
+            "personal-client",
+            MemoryFormatArg::Json,
+            true,
+        )
+        .expect("memory details should render");
+
+        assert!(rendered.contains("\"provider\":\"filesystem\""));
+        assert!(rendered.contains("\"seeded\":true"));
+        assert!(
+            temp.path()
+                .join(".openagents/memory/starter-workspace/README.md")
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(".openagents/memory/starter-workspace/memory.json")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn apply_setup_writes_outputs_and_seeds_memory_store() {
+        let temp = tempdir().expect("temp dir should exist");
+        let manifest_path = temp.path().join("workspace.yaml");
+        let output_root = temp.path().join("generated");
+        let selection = SetupSelection {
+            workspace_name: "starter-workspace".to_string(),
+            profile_preset: ProfilePreset::PersonalClient,
+            memory_backend: MemoryBackendPreset::Filesystem,
+            enabled_tools: vec![
+                openagents_core::ToolKind::Codex,
+                openagents_core::ToolKind::Claude,
+                openagents_core::ToolKind::Gemini,
+            ],
+            warnings: Vec::new(),
+        };
+
+        crate::apply_setup(&manifest_path, &output_root, &selection).expect("setup should apply");
+
+        assert!(output_root.join("codex/config.toml").exists());
+        assert!(output_root.join("claude/CLAUDE.md").exists());
+        assert!(output_root.join("gemini/GEMINI.md").exists());
+        assert!(
+            temp.path()
+                .join(".openagents/memory/starter-workspace/memory.json")
+                .exists()
+        );
     }
 }
