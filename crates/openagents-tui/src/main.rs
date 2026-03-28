@@ -185,12 +185,10 @@ impl SetupApp {
         self.screen = self.next_screen_after_boot();
         self.status = match self.screen {
             SetupScreen::Recommend => {
-                "OpenAgents found existing tool usage and prepared a recommended setup."
-                    .to_string()
+                "OpenAgents found existing tool usage and prepared a recommended setup.".to_string()
             }
             SetupScreen::Guided => {
-                "No supported tools were found, so OpenAgents opened a guided setup."
-                    .to_string()
+                "No supported tools were found, so OpenAgents opened a guided setup.".to_string()
             }
             _ => self.status.clone(),
         };
@@ -790,7 +788,10 @@ fn draw_dashboard(frame: &mut ratatui::Frame<'_>, manifest: &WorkspaceManifest) 
             Style::default().fg(TEAL).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(Span::styled(mascot_art(MascotState::Ready), Style::default().fg(TEAL))),
+        Line::from(Span::styled(
+            mascot_art(MascotState::Ready),
+            Style::default().fg(TEAL),
+        )),
         Line::from(""),
         Line::from(Span::styled(
             format!("workspace  {}", manifest.workspace),
@@ -897,8 +898,12 @@ fn draw_setup(
     let heading = match app.screen {
         SetupScreen::Boot => "OpenAgents is scanning your local tool footprint.",
         SetupScreen::Recommend => "OpenAgents prepared a recommendation from what it found.",
-        SetupScreen::Guided => "Guided setup is active so you can tune the recommendation step by step.",
-        SetupScreen::Complete => "Your starter workspace is ready and OpenAgents has written the files.",
+        SetupScreen::Guided => {
+            "Guided setup is active so you can tune the recommendation step by step."
+        }
+        SetupScreen::Complete => {
+            "Your starter workspace is ready and OpenAgents has written the files."
+        }
     };
     let progress = progress_labels(app.screen)
         .into_iter()
@@ -1023,12 +1028,9 @@ fn summary_lines(app: &SetupApp, manifest_path: &Path) -> Vec<Line<'static>> {
                     "Review notes",
                     Style::default().fg(LIME).add_modifier(Modifier::BOLD),
                 )));
-                lines.extend(
-                    app.report
-                        .warnings
-                        .iter()
-                        .map(|warning| Line::from(Span::styled(warning.clone(), Style::default().fg(SLATE)))),
-                );
+                lines.extend(app.report.warnings.iter().map(|warning| {
+                    Line::from(Span::styled(warning.clone(), Style::default().fg(SLATE)))
+                }));
             }
             lines
         }
@@ -1074,11 +1076,7 @@ fn focus_title(app: &SetupApp) -> &'static str {
     }
 }
 
-fn focus_lines(
-    app: &SetupApp,
-    manifest_path: &Path,
-    output_root: &Path,
-) -> Vec<Line<'static>> {
+fn focus_lines(app: &SetupApp, manifest_path: &Path, output_root: &Path) -> Vec<Line<'static>> {
     match app.screen {
         SetupScreen::Boot => vec![
             Line::from(Span::styled(
@@ -1292,10 +1290,9 @@ fn workspace_plan_lines(
             Style::default().fg(LIME).add_modifier(Modifier::BOLD),
         )));
         lines.extend(
-            app.selection
-                .warnings
-                .iter()
-                .map(|warning| Line::from(Span::styled(warning.clone(), Style::default().fg(SLATE)))),
+            app.selection.warnings.iter().map(|warning| {
+                Line::from(Span::styled(warning.clone(), Style::default().fg(SLATE)))
+            }),
         );
     }
 
