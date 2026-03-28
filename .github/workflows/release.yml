@@ -89,8 +89,9 @@ jobs:
   publish-npm:
     name: Publish npm installer
     needs: publish
-    if: ${{ secrets.NPM_TOKEN != '' }}
     runs-on: ubuntu-latest
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -101,7 +102,10 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      - name: Skip npm publish when token is unavailable
+        if: ${{ env.NODE_AUTH_TOKEN == '' }}
+        run: echo "NPM_TOKEN is not configured, so npm publish is skipped."
+
       - name: Publish package
+        if: ${{ env.NODE_AUTH_TOKEN != '' }}
         run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
