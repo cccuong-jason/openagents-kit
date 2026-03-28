@@ -22,7 +22,19 @@ This repository is meant to be forked as a public template. Other people can cop
 
 ## Installation
 
-Medium-term release installs:
+Primary install:
+
+```bash
+npx openagents-kit
+```
+
+That installs the native `openagents-kit` binary into your user bin directory, then you can run:
+
+```bash
+openagents-kit
+```
+
+Release-script fallbacks:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -Command "iwr https://raw.githubusercontent.com/cccuong-jason/openagents-kit/main/scripts/install.ps1 -UseBasicParsing | iex"
@@ -40,10 +52,11 @@ cargo install --git https://github.com/cccuong-jason/openagents-kit openagents-t
 
 ## Getting Started
 
-1. Install `openagents-kit`.
+1. Install with `npx openagents-kit`.
 2. Run `openagents-kit` or `openagents-kit setup`.
 3. Let the first-run flow scan local Codex, Claude, and Gemini footprints.
-4. Review the proposed starter workspace and generate `workspace.yaml` plus adapter outputs.
+4. Answer the guided questions as OpenAgents proposes a profile, memory backend, and tool set.
+5. Generate `workspace.yaml` plus adapter outputs.
 
 If you prefer direct manifest editing, the old workflow still works:
 
@@ -57,7 +70,8 @@ openagents-kit setup --dry-run
 
 - Auto-detects supported Codex, Claude, and Gemini config/state files on first run
 - Builds a recommended starter manifest from what it finds
-- Falls back into guided setup when no trustworthy local tool state is available
+- Drives setup as a conversational interview, one decision at a time
+- Falls back into guided defaults when no trustworthy local tool state is available
 - Keeps `workspace.yaml` as the canonical runtime file for technical users and automation
 
 ## Project Layout
