@@ -21,18 +21,17 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use setup::{SetupSelection, recommended_selection, selection_to_manifest, write_manifest};
 
-const PIXEL_MASCOT: &str = r"   .------.
- .`  .--.  `.
- |  | [] |  |
- |  |____|  |
- | .------. |
- | | 0  0 | |
- |_|__/\__|_|
-   /_/  \_\";
+const BOOT_TICKS: u16 = 8;
+const TEAL: Color = Color::Rgb(79, 212, 201);
+const LIME: Color = Color::Rgb(185, 255, 102);
+const SLATE: Color = Color::Rgb(123, 151, 166);
+const IVORY: Color = Color::Rgb(223, 237, 232);
 
-const EMBER: Color = Color::Rgb(214, 132, 96);
-const SKY: Color = Color::Rgb(130, 156, 178);
-const MIST: Color = Color::Rgb(196, 193, 187);
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MascotState {
+    Scanning,
+    Ready,
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -127,121 +126,261 @@ impl std::fmt::Display for ToolArg {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SetupScreen {
-    Review,
+    Boot,
+    Recommend,
     Guided,
     Complete,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SetupField {
+enum WizardStep {
     ProfilePreset,
     MemoryBackend,
-    Codex,
-    Claude,
-    Gemini,
+    Tools,
+    Review,
 }
 
 struct SetupApp {
     report: DetectionReport,
     selection: SetupSelection,
     screen: SetupScreen,
-    focused_field: usize,
+    wizard_step: WizardStep,
+    tool_cursor: usize,
+    boot_tick: u16,
     status: String,
 }
 
 impl SetupApp {
     fn new(report: DetectionReport, selection: SetupSelection) -> Self {
-        let screen = if report.detections.is_empty() {
-            SetupScreen::Guided
-        } else {
-            SetupScreen::Review
-        };
-
         Self {
             report,
             selection,
-            screen,
-            focused_field: 0,
-            status: "Press Enter to generate files or g to refine the setup.".to_string(),
+            screen: SetupScreen::Boot,
+            wizard_step: WizardStep::ProfilePreset,
+            tool_cursor: 0,
+            boot_tick: 0,
+            status: boot_loading_message(0),
         }
     }
 
-    fn fields() -> [SetupField; 5] {
-        [
-            SetupField::ProfilePreset,
-            SetupField::MemoryBackend,
-            SetupField::Codex,
-            SetupField::Claude,
-            SetupField::Gemini,
-        ]
-    }
-
-    fn selected_field(&self) -> SetupField {
-        Self::fields()[self.focused_field]
-    }
-
-    fn move_next(&mut self) {
-        self.focused_field = (self.focused_field + 1) % Self::fields().len();
-    }
-
-    fn move_previous(&mut self) {
-        self.focused_field = if self.focused_field == 0 {
-            Self::fields().len() - 1
+    fn next_screen_after_boot(&self) -> SetupScreen {
+        if self.report.detections.is_empty() {
+            SetupScreen::Guided
         } else {
-            self.focused_field - 1
+            SetupScreen::Recommend
+        }
+    }
+
+    fn advance_boot(&mut self) {
+        if self.screen != SetupScreen::Boot {
+            return;
+        }
+
+        self.boot_tick = self.boot_tick.saturating_add(1);
+        self.status = boot_loading_message(self.boot_tick.into());
+        if self.boot_tick < BOOT_TICKS {
+            return;
+        }
+
+        self.screen = self.next_screen_after_boot();
+        self.status = match self.screen {
+            SetupScreen::Recommend => {
+                "OpenAgents found existing tool usage and prepared a recommended setup."
+                    .to_string()
+            }
+            SetupScreen::Guided => {
+                "No supported tools were found, so OpenAgents opened a guided setup."
+                    .to_string()
+            }
+            _ => self.status.clone(),
         };
+    }
+
+    fn enter_guided(&mut self) {
+        self.screen = SetupScreen::Guided;
+        self.wizard_step = WizardStep::ProfilePreset;
+        self.tool_cursor = 0;
+        self.status = guided_status(self.wizard_step).to_string();
+    }
+
+    fn previous_step(&mut self) {
+        self.wizard_step = match self.wizard_step {
+            WizardStep::ProfilePreset => WizardStep::ProfilePreset,
+            WizardStep::MemoryBackend => WizardStep::ProfilePreset,
+            WizardStep::Tools => WizardStep::MemoryBackend,
+            WizardStep::Review => WizardStep::Tools,
+        };
+        self.status = guided_status(self.wizard_step).to_string();
+    }
+
+    fn next_step(&mut self) {
+        self.wizard_step = match self.wizard_step {
+            WizardStep::ProfilePreset => WizardStep::MemoryBackend,
+            WizardStep::MemoryBackend => WizardStep::Tools,
+            WizardStep::Tools => WizardStep::Review,
+            WizardStep::Review => WizardStep::Review,
+        };
+        self.status = guided_status(self.wizard_step).to_string();
+    }
+
+    fn move_tool_next(&mut self) {
+        self.tool_cursor = (self.tool_cursor + 1) % tool_order().len();
+        self.status = guided_status(self.wizard_step).to_string();
+    }
+
+    fn move_tool_previous(&mut self) {
+        self.tool_cursor = if self.tool_cursor == 0 {
+            tool_order().len() - 1
+        } else {
+            self.tool_cursor - 1
+        };
+        self.status = guided_status(self.wizard_step).to_string();
+    }
+
+    fn selected_tool(&self) -> ToolKind {
+        tool_order()[self.tool_cursor]
     }
 
     fn toggle_selected_tool(&mut self) {
-        let tool = match self.selected_field() {
-            SetupField::Codex => Some(ToolKind::Codex),
-            SetupField::Claude => Some(ToolKind::Claude),
-            SetupField::Gemini => Some(ToolKind::Gemini),
-            _ => None,
-        };
-
-        if let Some(tool) = tool {
-            if let Some(position) = self
-                .selection
-                .enabled_tools
-                .iter()
-                .position(|item| *item == tool)
-            {
-                self.selection.enabled_tools.remove(position);
-            } else {
-                self.selection.enabled_tools.push(tool);
-                self.selection.enabled_tools.sort();
-            }
+        let tool = self.selected_tool();
+        if let Some(position) = self
+            .selection
+            .enabled_tools
+            .iter()
+            .position(|item| *item == tool)
+        {
+            self.selection.enabled_tools.remove(position);
+        } else {
+            self.selection.enabled_tools.push(tool);
+            self.selection.enabled_tools.sort();
         }
+        self.status = guided_status(self.wizard_step).to_string();
     }
 
-    fn cycle_right(&mut self) {
-        match self.selected_field() {
-            SetupField::ProfilePreset => {
-                self.selection.profile_preset = self.selection.profile_preset.next();
+    fn cycle_current_choice(&mut self, forward: bool) {
+        match self.wizard_step {
+            WizardStep::ProfilePreset => {
+                self.selection.profile_preset = if forward {
+                    self.selection.profile_preset.next()
+                } else {
+                    self.selection.profile_preset.previous()
+                };
             }
-            SetupField::MemoryBackend => {
-                self.selection.memory_backend = self.selection.memory_backend.next();
+            WizardStep::MemoryBackend => {
+                self.selection.memory_backend = if forward {
+                    self.selection.memory_backend.next()
+                } else {
+                    self.selection.memory_backend.previous()
+                };
             }
-            SetupField::Codex | SetupField::Claude | SetupField::Gemini => {
-                self.toggle_selected_tool()
-            }
+            WizardStep::Tools => {}
+            WizardStep::Review => {}
         }
+        self.status = guided_status(self.wizard_step).to_string();
     }
+}
 
-    fn cycle_left(&mut self) {
-        match self.selected_field() {
-            SetupField::ProfilePreset => {
-                self.selection.profile_preset = self.selection.profile_preset.previous();
-            }
-            SetupField::MemoryBackend => {
-                self.selection.memory_backend = self.selection.memory_backend.previous();
-            }
-            SetupField::Codex | SetupField::Claude | SetupField::Gemini => {
-                self.toggle_selected_tool()
-            }
+fn tool_order() -> [ToolKind; 3] {
+    [ToolKind::Codex, ToolKind::Claude, ToolKind::Gemini]
+}
+
+fn mascot_art(state: MascotState) -> &'static str {
+    match state {
+        MascotState::Scanning => {
+            r"    _^_^_
+ .` - - `.
+ |  ___  |
+ | |===| |
+ |  |_|  |
+ '.___.'"
+        }
+        MascotState::Ready => {
+            r"    _^_^_
+ .` ^ ^ `.
+ |  ___  |
+ | |___| |
+ | _| |_ |
+ '.___.'"
         }
     }
+}
+
+fn boot_loading_message(tick: usize) -> String {
+    let dots = ".".repeat((tick % 3) + 1);
+    format!("Scanning local AI tools and workspace hints{dots}")
+}
+
+fn guided_status(step: WizardStep) -> &'static str {
+    match step {
+        WizardStep::ProfilePreset => {
+            "Choose the workspace style OpenAgents should prepare for this client."
+        }
+        WizardStep::MemoryBackend => {
+            "Choose where the starter memory should live before sharing the workspace."
+        }
+        WizardStep::Tools => {
+            "Choose which tool starter files OpenAgents should generate for this workspace."
+        }
+        WizardStep::Review => {
+            "Review the final setup, then press Enter once to generate the workspace."
+        }
+    }
+}
+
+fn setup_controls(screen: SetupScreen, wizard_step: WizardStep) -> &'static str {
+    match screen {
+        SetupScreen::Boot => "Enter skip scan | q quit",
+        SetupScreen::Recommend => "Enter accept recommendation | Tab guided setup | q quit",
+        SetupScreen::Guided => match wizard_step {
+            WizardStep::ProfilePreset | WizardStep::MemoryBackend => {
+                "Left/right change option | Enter continue | Backspace back | q quit"
+            }
+            WizardStep::Tools => {
+                "Up/down choose tool | Space toggle | Enter continue | Backspace back | q quit"
+            }
+            WizardStep::Review => "Enter generate files | Backspace back | r reset | q quit",
+        },
+        SetupScreen::Complete => "Enter or q exit",
+    }
+}
+
+fn progress_labels(screen: SetupScreen) -> [(&'static str, bool); 4] {
+    match screen {
+        SetupScreen::Boot => [
+            ("Scan", true),
+            ("Recommend", false),
+            ("Adjust", false),
+            ("Generate", false),
+        ],
+        SetupScreen::Recommend => [
+            ("Scan", false),
+            ("Recommend", true),
+            ("Adjust", false),
+            ("Generate", false),
+        ],
+        SetupScreen::Guided => [
+            ("Scan", false),
+            ("Recommend", false),
+            ("Adjust", true),
+            ("Generate", false),
+        ],
+        SetupScreen::Complete => [
+            ("Scan", false),
+            ("Recommend", false),
+            ("Adjust", false),
+            ("Generate", true),
+        ],
+    }
+}
+
+fn panel(title: &'static str) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            title,
+            Style::default().fg(TEAL).add_modifier(Modifier::BOLD),
+        ))
+        .border_style(Style::default().fg(SLATE))
 }
 
 fn main() -> Result<()> {
@@ -503,10 +642,13 @@ fn run_setup(manifest_path: &Path, output_root: &Path, dry_run: bool) -> Result<
 
     let result = loop {
         terminal.draw(|frame| {
-            draw_setup(frame, &app, manifest_path);
+            draw_setup(frame, &app, manifest_path, output_root);
         })?;
 
         if !event::poll(Duration::from_millis(250))? {
+            if app.screen == SetupScreen::Boot {
+                app.advance_boot();
+            }
             continue;
         }
 
@@ -515,7 +657,16 @@ fn run_setup(manifest_path: &Path, output_root: &Path, dry_run: bool) -> Result<
         };
 
         match app.screen {
-            SetupScreen::Review => match key.code {
+            SetupScreen::Boot => match key.code {
+                KeyCode::Enter => {
+                    while app.screen == SetupScreen::Boot {
+                        app.advance_boot();
+                    }
+                }
+                KeyCode::Char('q') | KeyCode::Esc => break Ok(()),
+                _ => {}
+            },
+            SetupScreen::Recommend => match key.code {
                 KeyCode::Enter => match apply_setup(manifest_path, output_root, &app.selection) {
                     Ok(message) => {
                         app.status = message;
@@ -523,31 +674,56 @@ fn run_setup(manifest_path: &Path, output_root: &Path, dry_run: bool) -> Result<
                     }
                     Err(error) => app.status = format!("Could not generate the setup: {error}"),
                 },
-                KeyCode::Char('g') => {
-                    app.screen = SetupScreen::Guided;
-                    app.status =
-                        "Guided mode unlocked. Use arrows to refine the setup.".to_string();
+                KeyCode::Tab => {
+                    app.enter_guided();
                 }
                 KeyCode::Char('q') | KeyCode::Esc => break Ok(()),
                 _ => {}
             },
             SetupScreen::Guided => match key.code {
-                KeyCode::Up => app.move_previous(),
-                KeyCode::Down => app.move_next(),
-                KeyCode::Left => app.cycle_left(),
-                KeyCode::Right => app.cycle_right(),
-                KeyCode::Char(' ') => app.toggle_selected_tool(),
+                KeyCode::Left
+                    if matches!(
+                        app.wizard_step,
+                        WizardStep::ProfilePreset | WizardStep::MemoryBackend
+                    ) =>
+                {
+                    app.cycle_current_choice(false)
+                }
+                KeyCode::Right
+                    if matches!(
+                        app.wizard_step,
+                        WizardStep::ProfilePreset | WizardStep::MemoryBackend
+                    ) =>
+                {
+                    app.cycle_current_choice(true)
+                }
+                KeyCode::Up if app.wizard_step == WizardStep::Tools => app.move_tool_previous(),
+                KeyCode::Down if app.wizard_step == WizardStep::Tools => app.move_tool_next(),
+                KeyCode::Char(' ') if app.wizard_step == WizardStep::Tools => {
+                    app.toggle_selected_tool()
+                }
                 KeyCode::Char('r') => {
                     app.selection = recommended_selection(&current_dir, &app.report.detections);
+                    app.wizard_step = WizardStep::ProfilePreset;
+                    app.tool_cursor = 0;
                     app.status =
-                        "Recommended defaults restored from the detection scan.".to_string();
+                        "Recommended defaults restored. Continue step by step from the top."
+                            .to_string();
                 }
-                KeyCode::Enter => match apply_setup(manifest_path, output_root, &app.selection) {
-                    Ok(message) => {
-                        app.status = message;
-                        app.screen = SetupScreen::Complete;
+                KeyCode::Backspace => app.previous_step(),
+                KeyCode::Enter => match app.wizard_step {
+                    WizardStep::Review => {
+                        match apply_setup(manifest_path, output_root, &app.selection) {
+                            Ok(message) => {
+                                app.status = message;
+                                app.screen = SetupScreen::Complete;
+                            }
+                            Err(error) => {
+                                app.status = format!("Could not generate the setup: {error}")
+                            }
+                        }
                     }
-                    Err(error) => app.status = format!("Could not generate the setup: {error}"),
+                    _ => app.next_step(),
                 },
                 KeyCode::Char('q') | KeyCode::Esc => break Ok(()),
                 _ => {}
@@ -585,7 +761,7 @@ fn apply_setup(
     )?;
 
     Ok(format!(
-        "Wrote {} and refreshed generated outputs in {}. Press Enter to exit.",
+        "Workspace ready. Wrote {} and refreshed generated outputs in {}. Review the files, then press Enter to exit.",
         manifest_path.display(),
         output_root.display()
     ))
@@ -610,18 +786,18 @@ fn draw_dashboard(frame: &mut ratatui::Frame<'_>, manifest: &WorkspaceManifest) 
 
     let mascot = Paragraph::new(vec![
         Line::from(Span::styled(
-            "OpenAgents Kit",
-            Style::default().fg(EMBER).add_modifier(Modifier::BOLD),
+            "OpenAgents Operator Console",
+            Style::default().fg(TEAL).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(Span::styled(PIXEL_MASCOT, Style::default().fg(EMBER))),
+        Line::from(Span::styled(mascot_art(MascotState::Ready), Style::default().fg(TEAL))),
         Line::from(""),
         Line::from(Span::styled(
             format!("workspace  {}", manifest.workspace),
-            Style::default().fg(MIST),
+            Style::default().fg(IVORY),
         )),
     ])
-    .block(Block::default().borders(Borders::ALL).title("Console"))
+    .block(panel("Console"))
     .wrap(Wrap { trim: false });
     frame.render_widget(mascot, hero[0]);
 
@@ -634,8 +810,8 @@ fn draw_dashboard(frame: &mut ratatui::Frame<'_>, manifest: &WorkspaceManifest) 
                 .clone()
                 .unwrap_or_else(|| "No description yet.".to_string());
             Line::from(vec![
-                Span::styled(format!("{name:<18}"), Style::default().fg(EMBER)),
-                Span::styled(description, Style::default().fg(MIST)),
+                Span::styled(format!("{name:<18}"), Style::default().fg(TEAL)),
+                Span::styled(description, Style::default().fg(IVORY)),
             ])
         })
         .collect::<Vec<_>>();
@@ -643,23 +819,19 @@ fn draw_dashboard(frame: &mut ratatui::Frame<'_>, manifest: &WorkspaceManifest) 
     let summary = Paragraph::new({
         let mut lines = vec![
             Line::from(Span::styled(
-                "Ready for apply, sync, doctor, and targeted repairs.",
-                Style::default().fg(MIST),
+                "Ready to sync generated tool starters and inspect workspace health.",
+                Style::default().fg(IVORY),
             )),
             Line::from(""),
             Line::from(Span::styled(
                 "Profiles",
-                Style::default().fg(EMBER).add_modifier(Modifier::BOLD),
+                Style::default().fg(TEAL).add_modifier(Modifier::BOLD),
             )),
         ];
         lines.extend(profile_lines);
         lines
     })
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Workspace Status"),
-    )
+    .block(panel("Workspace Status"))
     .wrap(Wrap { trim: false });
     frame.render_widget(summary, hero[1]);
 
@@ -680,220 +852,471 @@ fn draw_dashboard(frame: &mut ratatui::Frame<'_>, manifest: &WorkspaceManifest) 
         })
         .collect::<Vec<_>>();
     frame.render_widget(
-        List::new(profiles).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Active Profiles"),
-        ),
+        List::new(profiles).block(panel("Active Profiles")),
         layout[1],
     );
 
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(Span::styled(
-                "Press q to exit. Use `openagents-kit setup` to re-scan local tools and refresh generated outputs.",
-                Style::default().fg(SKY),
+                "Press q to exit. Use `openagents-kit setup` when you want OpenAgents to re-scan local tools.",
+                Style::default().fg(SLATE),
             )),
             Line::from(Span::styled(
-                "The terminal layout stays warm and compact so the workspace feels calm, not noisy.",
-                Style::default().fg(MIST),
+                "The console stays cool-toned and explicit so the next action is always visible.",
+                Style::default().fg(IVORY),
             )),
         ])
-        .block(Block::default().borders(Borders::ALL).title("Next Actions"))
+        .block(panel("Next Actions"))
         .wrap(Wrap { trim: false }),
         layout[2],
     );
 }
 
-fn draw_setup(frame: &mut ratatui::Frame<'_>, app: &SetupApp, manifest_path: &Path) {
+fn draw_setup(
+    frame: &mut ratatui::Frame<'_>,
+    app: &SetupApp,
+    manifest_path: &Path,
+    output_root: &Path,
+) {
     let layout = Layout::vertical([
-        Constraint::Length(12),
+        Constraint::Length(13),
         Constraint::Min(10),
-        Constraint::Length(4),
+        Constraint::Length(5),
     ])
     .split(frame.area());
-    let hero = Layout::horizontal([Constraint::Length(36), Constraint::Min(30)]).split(layout[0]);
+    let hero = Layout::horizontal([Constraint::Length(38), Constraint::Min(30)]).split(layout[0]);
+    let middle = Layout::horizontal([Constraint::Percentage(56), Constraint::Percentage(44)])
+        .split(layout[1]);
 
-    let heading = match app.screen {
-        SetupScreen::Review => "Auto-detect found an existing AI tool footprint.",
-        SetupScreen::Guided => {
-            "Guided setup is ready. Refine the starter profile, memory, and tools."
-        }
-        SetupScreen::Complete => "Setup written. Your starter workspace is now ready.",
+    let mascot_state = if app.screen == SetupScreen::Boot {
+        MascotState::Scanning
+    } else {
+        MascotState::Ready
     };
-    let detection_count = app.report.detections.len();
+    let heading = match app.screen {
+        SetupScreen::Boot => "OpenAgents is scanning your local tool footprint.",
+        SetupScreen::Recommend => "OpenAgents prepared a recommendation from what it found.",
+        SetupScreen::Guided => "Guided setup is active so you can tune the recommendation step by step.",
+        SetupScreen::Complete => "Your starter workspace is ready and OpenAgents has written the files.",
+    };
+    let progress = progress_labels(app.screen)
+        .into_iter()
+        .enumerate()
+        .flat_map(|(index, (label, active))| {
+            let mut spans = Vec::new();
+            if index > 0 {
+                spans.push(Span::raw("  "));
+            }
+            let style = if active {
+                Style::default().fg(LIME).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(SLATE)
+            };
+            spans.push(Span::styled(format!("[{}] {label}", index + 1), style));
+            spans
+        })
+        .collect::<Vec<_>>();
 
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(Span::styled(
                 "OpenAgents First Run",
-                Style::default().fg(EMBER).add_modifier(Modifier::BOLD),
+                Style::default().fg(TEAL).add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
-            Line::from(Span::styled(PIXEL_MASCOT, Style::default().fg(EMBER))),
+            Line::from(Span::styled(
+                mascot_art(mascot_state),
+                Style::default().fg(TEAL),
+            )),
             Line::from(""),
-            Line::from(Span::styled(heading, Style::default().fg(MIST))),
+            Line::from(Span::styled(heading, Style::default().fg(IVORY))),
+            Line::from(progress),
             Line::from(Span::styled(
                 format!("manifest target  {}", manifest_path.display()),
-                Style::default().fg(SKY),
+                Style::default().fg(SLATE),
             )),
             Line::from(Span::styled(
-                format!("detected tools  {detection_count}"),
-                Style::default().fg(SKY),
+                format!("detected tools   {}", app.report.detections.len()),
+                Style::default().fg(SLATE),
             )),
         ])
-        .block(Block::default().borders(Borders::ALL).title("Welcome"))
+        .block(panel("Welcome"))
         .wrap(Wrap { trim: false }),
         hero[0],
     );
 
-    let detection_lines = if app.report.detections.is_empty() {
-        vec![
-            Line::from(Span::styled(
-                "No supported config files were found, so OpenAgents is preparing a guided starter workspace.",
-                Style::default().fg(MIST),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "Tip: you can still re-scan later after installing Codex, Claude, or Gemini.",
-                Style::default().fg(SKY),
-            )),
-        ]
-    } else {
-        let mut lines = app
-            .report
-            .detections
-            .iter()
-            .map(|item| {
-                Line::from(vec![
-                    Span::styled(format!("{:<8}", item.tool), Style::default().fg(EMBER)),
-                    Span::styled(item.summary.clone(), Style::default().fg(MIST)),
-                ])
-            })
-            .collect::<Vec<_>>();
-        if !app.report.warnings.is_empty() {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                "Review notes",
-                Style::default().fg(EMBER).add_modifier(Modifier::BOLD),
-            )));
-            lines.extend(app.report.warnings.iter().map(|warning| {
-                Line::from(Span::styled(warning.clone(), Style::default().fg(SKY)))
-            }));
-        }
-        lines
-    };
     frame.render_widget(
-        Paragraph::new(detection_lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Detected Footprint"),
-            )
+        Paragraph::new(summary_lines(app, manifest_path))
+            .block(panel(summary_title(app)))
             .wrap(Wrap { trim: false }),
         hero[1],
     );
 
     frame.render_widget(
-        Paragraph::new(selection_lines(app))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Proposed Workspace"),
-            )
+        Paragraph::new(focus_lines(app, manifest_path, output_root))
+            .block(panel(focus_title(app)))
             .wrap(Wrap { trim: false }),
-        layout[1],
+        middle[0],
+    );
+    frame.render_widget(
+        Paragraph::new(workspace_plan_lines(app, manifest_path, output_root))
+            .block(panel("Workspace Plan"))
+            .wrap(Wrap { trim: false }),
+        middle[1],
     );
 
-    let controls = match app.screen {
-        SetupScreen::Review => "Enter apply starter | g guided setup | q quit",
-        SetupScreen::Guided => {
-            "Arrows edit | Space toggle tool | r reset defaults | Enter apply | q quit"
-        }
-        SetupScreen::Complete => "Enter or q exit",
-    };
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(Span::styled(controls, Style::default().fg(EMBER))),
-            Line::from(Span::styled(app.status.clone(), Style::default().fg(MIST))),
+            Line::from(Span::styled(
+                setup_controls(app.screen, app.wizard_step),
+                Style::default().fg(TEAL).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(app.status.clone(), Style::default().fg(IVORY))),
         ])
-        .block(Block::default().borders(Borders::ALL).title("Controls"))
+        .block(panel("Controls"))
         .wrap(Wrap { trim: false }),
         layout[2],
     );
 }
 
-fn selection_lines(app: &SetupApp) -> Vec<Line<'static>> {
-    let selected_style = Style::default().fg(EMBER).add_modifier(Modifier::BOLD);
-    let normal_style = Style::default().fg(MIST);
+fn summary_title(app: &SetupApp) -> &'static str {
+    match app.screen {
+        SetupScreen::Boot => "Scanning",
+        SetupScreen::Recommend => "Detected Footprint",
+        SetupScreen::Guided => "Current Step",
+        SetupScreen::Complete => "Next Action",
+    }
+}
 
-    let line_style = |field: SetupField| {
-        if app.screen == SetupScreen::Guided && app.selected_field() == field {
-            selected_style
-        } else {
-            normal_style
+fn summary_lines(app: &SetupApp, manifest_path: &Path) -> Vec<Line<'static>> {
+    match app.screen {
+        SetupScreen::Boot => vec![
+            Line::from(Span::styled(
+                boot_loading_message(app.boot_tick.into()),
+                Style::default().fg(IVORY),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "No input is required yet. OpenAgents is doing the first pass for you.",
+                Style::default().fg(SLATE),
+            )),
+            Line::from(Span::styled(
+                "Press Enter if you want to skip the animation and jump to the recommendation.",
+                Style::default().fg(SLATE),
+            )),
+        ],
+        SetupScreen::Recommend => {
+            let mut lines = vec![Line::from(Span::styled(
+                "OpenAgents found these local tool footprints:",
+                Style::default().fg(IVORY),
+            ))];
+            lines.extend(app.report.detections.iter().map(|item| {
+                Line::from(vec![
+                    Span::styled(format!("{:<8}", item.tool), Style::default().fg(TEAL)),
+                    Span::styled(item.summary.clone(), Style::default().fg(IVORY)),
+                ])
+            }));
+            if !app.report.warnings.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "Review notes",
+                    Style::default().fg(LIME).add_modifier(Modifier::BOLD),
+                )));
+                lines.extend(
+                    app.report
+                        .warnings
+                        .iter()
+                        .map(|warning| Line::from(Span::styled(warning.clone(), Style::default().fg(SLATE)))),
+                );
+            }
+            lines
         }
-    };
+        SetupScreen::Guided => vec![
+            Line::from(Span::styled(
+                guided_status(app.wizard_step),
+                Style::default().fg(IVORY),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("Step: {}", wizard_step_label(app.wizard_step)),
+                Style::default().fg(LIME),
+            )),
+            Line::from(Span::styled(
+                "OpenAgents keeps the recommendation visible on the right while you adjust details.",
+                Style::default().fg(SLATE),
+            )),
+        ],
+        SetupScreen::Complete => vec![
+            Line::from(Span::styled(
+                "Review the generated files, then run the doctor command once to confirm the profile.",
+                Style::default().fg(IVORY),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!(
+                    "Suggested next step  openagents-kit doctor --manifest {} --profile {}",
+                    manifest_path.display(),
+                    app.selection.profile_preset.profile_name()
+                ),
+                Style::default().fg(LIME),
+            )),
+        ],
+    }
+}
 
-    let tool_line = |field: SetupField, tool: ToolKind, enabled: bool| {
-        let marker = if enabled { "[x]" } else { "[ ]" };
+fn focus_title(app: &SetupApp) -> &'static str {
+    match app.screen {
+        SetupScreen::Boot => "OpenAgents Is Resolving",
+        SetupScreen::Recommend => "Recommended Setup",
+        SetupScreen::Guided => "Guided Adjustments",
+        SetupScreen::Complete => "Generated Outputs",
+    }
+}
+
+fn focus_lines(
+    app: &SetupApp,
+    manifest_path: &Path,
+    output_root: &Path,
+) -> Vec<Line<'static>> {
+    match app.screen {
+        SetupScreen::Boot => vec![
+            Line::from(Span::styled(
+                "OpenAgents will inspect local tool configs, choose a sensible starter profile, and prepare generated outputs.",
+                Style::default().fg(IVORY),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("manifest -> {}", manifest_path.display()),
+                Style::default().fg(TEAL),
+            )),
+            Line::from(Span::styled(
+                format!("outputs  -> {}", output_root.display()),
+                Style::default().fg(TEAL),
+            )),
+        ],
+        SetupScreen::Recommend => vec![
+            Line::from(Span::styled(
+                "Primary action",
+                Style::default().fg(LIME).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "Press Enter to accept the recommendation and let OpenAgents generate the workspace.",
+                Style::default().fg(IVORY),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Need changes?",
+                Style::default().fg(TEAL).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "Press Tab to adjust profile, memory, or tools one step at a time.",
+                Style::default().fg(IVORY),
+            )),
+        ],
+        SetupScreen::Guided => guided_focus_lines(app),
+        SetupScreen::Complete => vec![
+            Line::from(Span::styled(
+                format!("workspace.yaml written to {}", manifest_path.display()),
+                Style::default().fg(IVORY),
+            )),
+            Line::from(Span::styled(
+                format!("starter outputs refreshed in {}", output_root.display()),
+                Style::default().fg(IVORY),
+            )),
+            Line::from(Span::styled(
+                "OpenAgents also ensured the filesystem memory store when that backend was selected.",
+                Style::default().fg(SLATE),
+            )),
+        ],
+    }
+}
+
+fn guided_focus_lines(app: &SetupApp) -> Vec<Line<'static>> {
+    match app.wizard_step {
+        WizardStep::ProfilePreset => {
+            let options = [
+                (
+                    "Personal Client",
+                    "Best when one client or one solo workspace needs a clean starter.",
+                    app.selection.profile_preset == setup::ProfilePreset::PersonalClient,
+                ),
+                (
+                    "Team Workspace",
+                    "Best when multiple people will share a longer-lived setup.",
+                    app.selection.profile_preset == setup::ProfilePreset::TeamWorkspace,
+                ),
+                (
+                    "Project Sandbox",
+                    "Best when you need a lighter project-specific sandbox.",
+                    app.selection.profile_preset == setup::ProfilePreset::ProjectSandbox,
+                ),
+            ];
+            options
+                .into_iter()
+                .flat_map(option_lines)
+                .collect::<Vec<_>>()
+        }
+        WizardStep::MemoryBackend => {
+            let options = [
+                (
+                    "Filesystem",
+                    "Starts local and seeds a visible memory store under .openagents.",
+                    app.selection.memory_backend == setup::MemoryBackendPreset::Filesystem,
+                ),
+                (
+                    "Cortex",
+                    "Keeps the config ready for a hosted/shared memory backend later.",
+                    app.selection.memory_backend == setup::MemoryBackendPreset::Cortex,
+                ),
+            ];
+            options
+                .into_iter()
+                .flat_map(option_lines)
+                .collect::<Vec<_>>()
+        }
+        WizardStep::Tools => tool_order()
+            .into_iter()
+            .flat_map(|tool| {
+                let selected = app.selected_tool() == tool;
+                let enabled = app.selection.enabled_tools.contains(&tool);
+                let prefix = if enabled { "[x]" } else { "[ ]" };
+                let label = if selected { ">" } else { " " };
+                let style = if selected {
+                    Style::default().fg(LIME).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(IVORY)
+                };
+                [
+                    Line::from(Span::styled(
+                        format!("{label} {prefix} {:<7} starter output", tool),
+                        style,
+                    )),
+                    Line::from(Span::styled(
+                        tool_description(tool),
+                        Style::default().fg(SLATE),
+                    )),
+                    Line::from(""),
+                ]
+            })
+            .collect(),
+        WizardStep::Review => vec![
+            Line::from(Span::styled(
+                "Everything is ready to generate.",
+                Style::default().fg(IVORY),
+            )),
+            Line::from(Span::styled(
+                "Press Enter once to write the manifest, memory store, and generated tool files.",
+                Style::default().fg(LIME),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Press Backspace if you want to revisit the previous step first.",
+                Style::default().fg(SLATE),
+            )),
+        ],
+    }
+}
+
+fn option_lines(option: (&'static str, &'static str, bool)) -> [Line<'static>; 3] {
+    let style = if option.2 {
+        Style::default().fg(LIME).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(IVORY)
+    };
+    [
         Line::from(Span::styled(
-            format!("{marker} {:<7} starter adapter output", tool),
-            line_style(field),
-        ))
-    };
+            format!("{} {}", if option.2 { ">" } else { " " }, option.0),
+            style,
+        )),
+        Line::from(Span::styled(option.1, Style::default().fg(SLATE))),
+        Line::from(""),
+    ]
+}
 
+fn workspace_plan_lines(
+    app: &SetupApp,
+    manifest_path: &Path,
+    output_root: &Path,
+) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(Span::styled(
-            format!("workspace         {}", app.selection.workspace_name),
-            Style::default().fg(SKY),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            format!("profile preset    {}", app.selection.profile_preset.label()),
-            line_style(SetupField::ProfilePreset),
+            format!("workspace       {}", app.selection.workspace_name),
+            Style::default().fg(TEAL),
         )),
         Line::from(Span::styled(
-            format!("memory backend    {}", app.selection.memory_backend.label()),
-            line_style(SetupField::MemoryBackend),
+            format!("profile         {}", app.selection.profile_preset.label()),
+            Style::default().fg(IVORY),
         )),
-        Line::from(""),
+        Line::from(Span::styled(
+            format!("memory          {}", app.selection.memory_backend.label()),
+            Style::default().fg(IVORY),
+        )),
         Line::from(Span::styled(
             "enabled tools",
-            Style::default().fg(EMBER).add_modifier(Modifier::BOLD),
+            Style::default().fg(LIME).add_modifier(Modifier::BOLD),
         )),
-        tool_line(
-            SetupField::Codex,
-            ToolKind::Codex,
-            app.selection.enabled_tools.contains(&ToolKind::Codex),
-        ),
-        tool_line(
-            SetupField::Claude,
-            ToolKind::Claude,
-            app.selection.enabled_tools.contains(&ToolKind::Claude),
-        ),
-        tool_line(
-            SetupField::Gemini,
-            ToolKind::Gemini,
-            app.selection.enabled_tools.contains(&ToolKind::Gemini),
-        ),
     ];
+
+    lines.extend(tool_order().into_iter().map(|tool| {
+        let marker = if app.selection.enabled_tools.contains(&tool) {
+            "[x]"
+        } else {
+            "[ ]"
+        };
+        let style = if app.screen == SetupScreen::Guided
+            && app.wizard_step == WizardStep::Tools
+            && app.selected_tool() == tool
+        {
+            Style::default().fg(LIME).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(IVORY)
+        };
+        Line::from(Span::styled(format!("{marker} {tool}"), style))
+    }));
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("manifest        {}", manifest_path.display()),
+        Style::default().fg(SLATE),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("outputs         {}", output_root.display()),
+        Style::default().fg(SLATE),
+    )));
 
     if !app.selection.warnings.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "review reminders",
-            Style::default().fg(EMBER).add_modifier(Modifier::BOLD),
+            Style::default().fg(LIME).add_modifier(Modifier::BOLD),
         )));
         lines.extend(
             app.selection
                 .warnings
                 .iter()
-                .map(|warning| Line::from(Span::styled(warning.clone(), Style::default().fg(SKY)))),
+                .map(|warning| Line::from(Span::styled(warning.clone(), Style::default().fg(SLATE)))),
         );
     }
 
     lines
+}
+
+fn wizard_step_label(step: WizardStep) -> &'static str {
+    match step {
+        WizardStep::ProfilePreset => "Profile",
+        WizardStep::MemoryBackend => "Memory",
+        WizardStep::Tools => "Tools",
+        WizardStep::Review => "Review",
+    }
+}
+
+fn tool_description(tool: ToolKind) -> &'static str {
+    match tool {
+        ToolKind::Codex => "Generates a merge-ready Codex starter snippet.",
+        ToolKind::Claude => "Generates a starter CLAUDE guidance file.",
+        ToolKind::Gemini => "Generates a starter GEMINI guidance file.",
+    }
 }
 
 #[cfg(test)]
@@ -904,8 +1327,13 @@ mod tests {
     use clap::Parser;
     use tempfile::tempdir;
 
+    use crate::detection::{DetectionReport, ToolDetection};
     use crate::setup::{MemoryBackendPreset, ProfilePreset, SetupSelection};
-    use crate::{Cli, Commands, MemoryFormatArg, ToolArg};
+    use crate::{
+        Cli, Commands, MemoryFormatArg, SetupApp, SetupScreen, ToolArg, WizardStep,
+        boot_loading_message, setup_controls,
+    };
+    use openagents_core::ToolKind;
 
     fn fixture_path() -> PathBuf {
         PathBuf::from(concat!(
@@ -947,6 +1375,88 @@ mod tests {
     fn falls_back_to_tui_without_subcommand() {
         let cli = Cli::parse_from(["openagents-kit"]);
         assert!(cli.command.is_none());
+    }
+
+    fn sample_detection_report() -> DetectionReport {
+        DetectionReport {
+            detections: vec![ToolDetection {
+                tool: ToolKind::Claude,
+                evidence_path: PathBuf::from("C:/Users/example/.claude.json"),
+                summary: "Claude state found".to_string(),
+            }],
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn setup_starts_in_boot_and_advances_to_recommend_when_detections_exist() {
+        let selection = SetupSelection {
+            workspace_name: "starter-workspace".to_string(),
+            profile_preset: ProfilePreset::PersonalClient,
+            memory_backend: MemoryBackendPreset::Filesystem,
+            enabled_tools: vec![ToolKind::Claude],
+            warnings: Vec::new(),
+        };
+        let mut app = SetupApp::new(sample_detection_report(), selection);
+
+        assert_eq!(app.screen, SetupScreen::Boot);
+
+        for _ in 0..crate::BOOT_TICKS {
+            app.advance_boot();
+        }
+
+        assert_eq!(app.screen, SetupScreen::Recommend);
+    }
+
+    #[test]
+    fn setup_advances_to_guided_when_boot_finishes_without_detections() {
+        let selection = SetupSelection {
+            workspace_name: "starter-workspace".to_string(),
+            profile_preset: ProfilePreset::PersonalClient,
+            memory_backend: MemoryBackendPreset::Filesystem,
+            enabled_tools: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let mut app = SetupApp::new(DetectionReport::default(), selection);
+
+        for _ in 0..crate::BOOT_TICKS {
+            app.advance_boot();
+        }
+
+        assert_eq!(app.screen, SetupScreen::Guided);
+        assert_eq!(app.wizard_step, WizardStep::ProfilePreset);
+    }
+
+    #[test]
+    fn controls_text_highlights_primary_action_per_screen() {
+        assert_eq!(
+            setup_controls(SetupScreen::Recommend, WizardStep::ProfilePreset),
+            "Enter accept recommendation | Tab guided setup | q quit"
+        );
+        assert_eq!(
+            setup_controls(SetupScreen::Guided, WizardStep::Tools),
+            "Up/down choose tool | Space toggle | Enter continue | Backspace back | q quit"
+        );
+        assert_eq!(
+            setup_controls(SetupScreen::Complete, WizardStep::Review),
+            "Enter or q exit"
+        );
+    }
+
+    #[test]
+    fn boot_loading_message_cycles_through_scanning_copy() {
+        assert_eq!(
+            boot_loading_message(0),
+            "Scanning local AI tools and workspace hints."
+        );
+        assert_eq!(
+            boot_loading_message(1),
+            "Scanning local AI tools and workspace hints.."
+        );
+        assert_eq!(
+            boot_loading_message(2),
+            "Scanning local AI tools and workspace hints..."
+        );
     }
 
     #[test]
