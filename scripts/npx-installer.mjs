@@ -27,7 +27,7 @@ export function resolveAssetName({ platform, arch }) {
 
 export function resolveInstallDir({ platform, homeDir }) {
   if (platform === 'win32') {
-    return path.join(homeDir, '.local', 'bin');
+    return path.win32.join(homeDir, '.local', 'bin');
   }
 
   return `${homeDir}/.local/bin`;
