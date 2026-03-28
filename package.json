@@ -1,0 +1,17 @@
+{
+  "name": "openagents-kit",
+  "version": "0.1.0",
+  "description": "Universal installer for the OpenAgents Kit native CLI.",
+  "bin": {
+    "openagents-kit": "./scripts/npx-installer.mjs"
+  },
+  "files": [
+    "scripts/npx-installer.mjs"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
