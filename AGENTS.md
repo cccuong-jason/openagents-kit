@@ -88,4 +88,18 @@ Copy-Item "$HOME\.local\bin\openagents-kit.exe" "$HOME\.cargo\bin\openagents-kit
 
 - npm does not allow overwriting a published version. Always publish a newer version such as `0.3.1`, `0.3.2`, etc.
 - If `npx openagents-kit` fails but `npx --yes github:cccuong-jason/openagents-kit#vX.Y.Z` works, the GitHub release is fine and the blocker is npm publishing.
-- If npm publish fails with `403` mentioning 2FA, publish with npm account 2FA enabled or use trusted publishing / a granular token with bypass 2FA.
+- If `npm publish --access public` fails with `EOTP`, finish the browser auth prompt once and rerun the publish:
+
+```powershell
+npm publish --access public
+```
+
+- After the package exists on npm, configure trusted publishing so future GitHub releases do not depend on a token:
+
+```powershell
+npm trust github openagents-kit --repo cccuong-jason/openagents-kit --file release.yml --yes
+```
+
+- `npm trust github` also requires the one-time browser/2FA approval on this account.
+- The release workflow now tries trusted publishing first and falls back to `NPM_TOKEN` if it is configured.
+- If npm publish fails with `403` mentioning 2FA, use npm account 2FA or a granular access token with bypass 2FA enabled.
