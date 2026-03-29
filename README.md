@@ -1,24 +1,26 @@
 # OpenAgents Kit
 
-OpenAgents Kit is a Rust-based terminal setup kit for centralizing AI workspace setup across tools, accounts, and devices.
+OpenAgents Kit is a Rust-based terminal control plane for keeping AI tools, skills, MCP servers, and memory aligned across devices and projects.
 
 It gives you one source of truth for:
 
-- Profiles for personal and team contexts
+- Global profiles for personal and team contexts
 - Memory providers and shared context backends
 - Tool adapters for `Codex`, `Claude`, and `Gemini`
-- Generated outputs and bootstrap artifacts
+- Curated skill and MCP inventories
+- Managed sync outputs and project attachments
 
 ## What This Repo Is For
 
-This repository is meant to be forked as a public template. Other people can copy the scaffold, rename it, and point it at their own memory and tooling setup without rebuilding the structure from scratch.
+This repository is meant to be forked as a public template. Other people can copy the scaffold, rename it, and point it at their own control-plane setup without rebuilding the structure from scratch.
 
 ## Core Concepts
 
-- `workspace.yaml` is the canonical manifest.
-- Profiles describe how a workspace should behave for a given context.
-- Adapters render tool-specific config from the same source of truth.
-- The terminal UI helps users detect existing tools, generate a starter workspace, and repair their setup.
+- `config.yaml` in the OpenAgents app-config directory is the canonical source of truth.
+- `device.yaml` stores machine-local bindings such as managed-output and memory roots.
+- `attachments.yaml` maps the current folder or repo to a global profile without storing config inside the repo.
+- Profiles describe which tools, skills, MCP servers, and memory behavior OpenAgents should keep in sync.
+- The terminal UI drives setup as a conversation first and only shows the dashboard after setup is complete.
 
 ## Installation
 
@@ -55,30 +57,51 @@ cargo install --git https://github.com/cccuong-jason/openagents-kit openagents-t
 1. Install with `npx openagents-kit`.
 2. Run `openagents-kit` or `openagents-kit setup`.
 3. Let the first-run flow scan local Codex, Claude, and Gemini footprints.
-4. Answer the guided questions as OpenAgents proposes a profile, memory backend, and tool set.
-5. Generate `workspace.yaml` plus adapter outputs.
+4. Answer the assistant-led questions as OpenAgents proposes a profile, memory backend, tool set, starter skills, and starter MCP servers.
+5. Let OpenAgents write the global control plane and sync managed outputs.
 
-If you prefer direct manifest editing, the old workflow still works:
+Useful commands after setup:
 
 ```bash
-openagents-kit doctor --profile personal-client
-openagents-kit apply --profile personal-client --tool codex --dry-run
+openagents-kit sync
+openagents-kit doctor
+openagents-kit memory --ensure
+openagents-kit catalog
+openagents-kit attach --profile personal-client
 openagents-kit setup --dry-run
 ```
 
 ## First-Run UX
 
 - Auto-detects supported Codex, Claude, and Gemini config/state files on first run
-- Builds a recommended starter manifest from what it finds
+- Detects missing memory, missing skills, and missing MCP server inventory
+- Builds a recommended global control plane from what it finds
 - Drives setup as a conversational interview, one decision at a time
-- Falls back into guided defaults when no trustworthy local tool state is available
-- Keeps `workspace.yaml` as the canonical runtime file for technical users and automation
+- Attaches the current project to a global profile instead of generating repo-owned config by default
+- Syncs managed tool outputs, skill assets, MCP assets, and local filesystem memory from the same source of truth
+
+## Config Layout
+
+OpenAgents stores its control plane in the platform app-config directory:
+
+- Windows: `%APPDATA%/OpenAgents/`
+- macOS/Linux: `~/.config/openagents/`
+
+Important files:
+
+- `config.yaml`
+- `device.yaml`
+- `attachments.yaml`
+- `managed/`
+- `memory/`
+
+Legacy `workspace.yaml` files are still readable as an import source during setup, but they are no longer the primary model.
 
 ## Project Layout
 
-- `crates/openagents-core` - manifest parsing, profile resolution, and shared models
-- `crates/openagents-adapters` - tool renderers and output generation
-- `crates/openagents-tui` - first-run setup, detection, and diagnostics
+- `crates/openagents-core` - control-plane parsing, legacy manifest import, profile resolution, and shared models
+- `crates/openagents-adapters` - tool renderers and managed output generation
+- `crates/openagents-tui` - first-run chat setup, detection, control-plane sync, and diagnostics
 - `examples/` - starter manifests and sample profiles
 - `scripts/` - install helpers for GitHub Releases
 

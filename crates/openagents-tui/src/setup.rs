@@ -1,11 +1,11 @@
-use std::path::Path;
+use std::collections::BTreeMap;
 
-use anyhow::Result;
 use openagents_core::{
-    MemoryConfig, Profile, ProfileScope, ToolConfig, ToolKind, WorkspaceManifest,
+    MemoryConfig, OpenAgentsConfig, Profile, ProfileScope, ToolConfig, ToolKind,
 };
 
-use crate::detection::ToolDetection;
+use crate::catalog::{recommended_mcp_ids, recommended_skill_ids};
+use crate::detection::DetectionReport;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryBackendPreset {
@@ -18,6 +18,13 @@ impl MemoryBackendPreset {
         match self {
             Self::Filesystem => "Filesystem",
             Self::Cortex => "Cortex",
+        }
+    }
+
+    pub fn provider_name(self) -> &'static str {
+        match self {
+            Self::Filesystem => "filesystem",
+            Self::Cortex => "cortex",
         }
     }
 
@@ -80,58 +87,93 @@ pub struct SetupSelection {
     pub profile_preset: ProfilePreset,
     pub memory_backend: MemoryBackendPreset,
     pub enabled_tools: Vec<ToolKind>,
+    pub selected_skills: Vec<String>,
+    pub selected_mcp_servers: Vec<String>,
     pub warnings: Vec<String>,
 }
 
-pub fn recommended_selection(cwd: &Path, detections: &[ToolDetection]) -> SetupSelection {
-    let workspace_name = cwd
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .unwrap_or("openagents-workspace")
-        .to_string();
-
-    let mut enabled_tools = detections.iter().map(|item| item.tool).collect::<Vec<_>>();
+pub fn recommended_selection(detections: &DetectionReport) -> SetupSelection {
+    let mut enabled_tools = detections
+        .detections
+        .iter()
+        .map(|item| item.tool)
+        .collect::<Vec<_>>();
+    if enabled_tools.is_empty() {
+        enabled_tools = vec![ToolKind::Codex, ToolKind::Claude, ToolKind::Gemini];
+    }
     enabled_tools.sort();
     enabled_tools.dedup();
 
-    let warnings = if detections.is_empty() {
-        vec!["No supported tool configs were detected, so OpenAgents prepared a guided starter setup.".to_string()]
+    let mut warnings = if detections.detections.is_empty() {
+        vec![
+            "I did not find a trusted tool footprint, so I prepared a starter control plane."
+                .to_string(),
+        ]
     } else {
         vec![
-            "Review the generated memory endpoint before sharing this setup with a client."
+            "I can sync the same desired capabilities across your enabled tools after setup."
                 .to_string(),
         ]
     };
 
+    if !detections.has_memory_layer {
+        warnings.push(
+            "I did not detect an existing memory layer, so I will recommend a local one first."
+                .to_string(),
+        );
+    }
+
+    let profile_preset = ProfilePreset::PersonalClient;
+    let memory_backend = MemoryBackendPreset::Filesystem;
+    let mut selected_skills = recommended_skill_ids(profile_preset.profile_name());
+    let mut selected_mcp_servers = recommended_mcp_ids(
+        profile_preset.profile_name(),
+        memory_backend.provider_name(),
+    );
+
+    merge_unique(&mut selected_skills, &detections.installed_skills);
+    merge_unique(&mut selected_mcp_servers, &detections.installed_mcp_servers);
+
     SetupSelection {
-        workspace_name,
-        profile_preset: ProfilePreset::PersonalClient,
-        memory_backend: MemoryBackendPreset::Filesystem,
+        workspace_name: "openagents-home".to_string(),
+        profile_preset,
+        memory_backend,
         enabled_tools,
+        selected_skills,
+        selected_mcp_servers,
         warnings,
     }
 }
 
-pub fn selection_to_manifest(selection: &SetupSelection) -> WorkspaceManifest {
+pub fn refresh_catalog_recommendations(selection: &mut SetupSelection) {
+    selection.selected_skills = recommended_skill_ids(selection.profile_preset.profile_name());
+    selection.selected_mcp_servers = recommended_mcp_ids(
+        selection.profile_preset.profile_name(),
+        selection.memory_backend.provider_name(),
+    );
+}
+
+pub fn selection_to_config(selection: &SetupSelection) -> OpenAgentsConfig {
     let (description, scope) = match selection.profile_preset {
         ProfilePreset::PersonalClient => ("Personal client profile.", ProfileScope::Client),
         ProfilePreset::TeamWorkspace => ("Team workspace profile.", ProfileScope::Team),
         ProfilePreset::ProjectSandbox => ("Project sandbox profile.", ProfileScope::Project),
     };
 
-    let (provider, endpoint) = match selection.memory_backend {
-        MemoryBackendPreset::Filesystem => (
-            "filesystem",
+    let endpoint = match selection.memory_backend {
+        MemoryBackendPreset::Filesystem => {
             format!(
-                "./.openagents/memory/{}",
-                sanitize_workspace_name(&selection.workspace_name)
-            ),
+                "profiles/{}",
+                sanitize_profile_name(selection.profile_preset.profile_name())
+            )
+        }
+        MemoryBackendPreset::Cortex => format!(
+            "https://memory.example.com/{}",
+            sanitize_profile_name(selection.profile_preset.profile_name())
         ),
-        MemoryBackendPreset::Cortex => ("cortex", "https://memory.example.com".to_string()),
     };
 
-    let mut tools = std::collections::BTreeMap::new();
+    let mut tools = BTreeMap::new();
     for tool in &selection.enabled_tools {
         let guidance_packs = match tool {
             ToolKind::Codex => vec!["shared-memory".to_string(), "detection-import".to_string()],
@@ -148,30 +190,66 @@ pub fn selection_to_manifest(selection: &SetupSelection) -> WorkspaceManifest {
         );
     }
 
-    let mut profiles = std::collections::BTreeMap::new();
-    profiles.insert(
-        selection.profile_preset.profile_name().to_string(),
+    let profile_name = selection.profile_preset.profile_name().to_string();
+    let mut config = OpenAgentsConfig::new(&selection.workspace_name, &profile_name);
+    config.profiles.insert(
+        profile_name,
         Profile {
             description: Some(description.to_string()),
             extends: None,
             memory: MemoryConfig {
-                provider: provider.to_string(),
+                provider: selection.memory_backend.provider_name().to_string(),
                 endpoint,
                 scope,
             },
             tools,
+            skills: selection.selected_skills.clone(),
+            mcp_servers: selection.selected_mcp_servers.clone(),
         },
     );
 
-    WorkspaceManifest {
-        version: 1,
-        workspace: selection.workspace_name.clone(),
-        profiles,
+    config
+}
+
+pub fn selection_from_config(config: &OpenAgentsConfig) -> SetupSelection {
+    let profile_name = config.default_profile.as_str();
+    let profile = config
+        .profiles
+        .get(profile_name)
+        .or_else(|| config.profiles.values().next())
+        .expect("config should have at least one profile");
+
+    let profile_preset = match profile_name {
+        "team-workspace" => ProfilePreset::TeamWorkspace,
+        "project-sandbox" => ProfilePreset::ProjectSandbox,
+        _ => ProfilePreset::PersonalClient,
+    };
+
+    let memory_backend = match profile.memory.provider.as_str() {
+        "cortex" => MemoryBackendPreset::Cortex,
+        _ => MemoryBackendPreset::Filesystem,
+    };
+
+    let mut enabled_tools = profile
+        .tools
+        .iter()
+        .filter_map(|(tool, config)| config.enabled.then_some(*tool))
+        .collect::<Vec<_>>();
+    enabled_tools.sort();
+
+    SetupSelection {
+        workspace_name: config.workspace_name.clone(),
+        profile_preset,
+        memory_backend,
+        enabled_tools,
+        selected_skills: profile.skills.clone(),
+        selected_mcp_servers: profile.mcp_servers.clone(),
+        warnings: vec!["I imported your existing OpenAgents control plane.".to_string()],
     }
 }
 
-fn sanitize_workspace_name(workspace_name: &str) -> String {
-    let mut sanitized = workspace_name
+fn sanitize_profile_name(value: &str) -> String {
+    value
         .chars()
         .map(|character| {
             if character.is_ascii_alphanumeric() {
@@ -180,115 +258,152 @@ fn sanitize_workspace_name(workspace_name: &str) -> String {
                 '-'
             }
         })
-        .collect::<String>();
-    while sanitized.contains("--") {
-        sanitized = sanitized.replace("--", "-");
-    }
-    sanitized.trim_matches('-').to_string()
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
 }
 
-pub fn write_manifest(path: &Path, selection: &SetupSelection) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+fn merge_unique(target: &mut Vec<String>, source: &[String]) {
+    for item in source {
+        if !target.contains(item) {
+            target.push(item.clone());
+        }
     }
-
-    let manifest = selection_to_manifest(selection);
-    let serialized = serde_yaml::to_string(&manifest)?;
-    std::fs::write(path, serialized)?;
-
-    Ok(())
+    target.sort();
+    target.dedup();
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use std::path::Path;
-
-    use tempfile::tempdir;
+    use crate::detection::{DetectionReport, ToolDetection};
+    use openagents_core::{OpenAgentsConfig, ProfileScope, ToolKind};
 
     use super::{
-        MemoryBackendPreset, ProfilePreset, recommended_selection, selection_to_manifest,
-        write_manifest,
+        MemoryBackendPreset, ProfilePreset, recommended_selection, refresh_catalog_recommendations,
+        selection_from_config, selection_to_config,
     };
-    use crate::detection::ToolDetection;
-    use openagents_core::{ProfileScope, ToolKind, WorkspaceManifest};
 
     #[test]
-    fn builds_detected_selection_with_filesystem_memory_default() {
-        let detections = vec![
-            ToolDetection {
-                tool: ToolKind::Codex,
-                evidence_path: "C:/Users/example/.codex/config.toml".into(),
-                summary: "Codex config found".to_string(),
-            },
-            ToolDetection {
-                tool: ToolKind::Gemini,
-                evidence_path: "C:/Users/example/.gemini/settings.json".into(),
-                summary: "Gemini settings found".to_string(),
-            },
-        ];
+    fn builds_detected_selection_with_catalog_defaults() {
+        let detections = DetectionReport {
+            detections: vec![
+                ToolDetection {
+                    tool: ToolKind::Codex,
+                    evidence_path: "C:/Users/example/.codex/config.toml".into(),
+                    summary: "Codex config found".to_string(),
+                },
+                ToolDetection {
+                    tool: ToolKind::Gemini,
+                    evidence_path: "C:/Users/example/.gemini/settings.json".into(),
+                    summary: "Gemini settings found".to_string(),
+                },
+            ],
+            warnings: Vec::new(),
+            installed_skills: vec!["team-handoff".to_string()],
+            installed_mcp_servers: vec!["context7".to_string()],
+            has_memory_layer: false,
+        };
 
-        let selection =
-            recommended_selection(Path::new("D:/Projects/client-workspace"), &detections);
+        let selection = recommended_selection(&detections);
 
-        assert_eq!(selection.workspace_name, "client-workspace");
+        assert_eq!(selection.workspace_name, "openagents-home");
         assert_eq!(selection.profile_preset, ProfilePreset::PersonalClient);
         assert_eq!(selection.memory_backend, MemoryBackendPreset::Filesystem);
         assert_eq!(
             selection.enabled_tools,
             vec![ToolKind::Codex, ToolKind::Gemini]
         );
+        assert!(
+            selection
+                .selected_skills
+                .contains(&"team-handoff".to_string())
+        );
+        assert!(
+            selection
+                .selected_mcp_servers
+                .contains(&"filesystem-memory".to_string())
+        );
     }
 
     #[test]
-    fn converts_selection_into_manifest() {
+    fn converts_selection_into_global_config() {
         let selection = super::SetupSelection {
-            workspace_name: "starter-workspace".to_string(),
+            workspace_name: "starter-home".to_string(),
             profile_preset: ProfilePreset::TeamWorkspace,
             memory_backend: MemoryBackendPreset::Filesystem,
             enabled_tools: vec![ToolKind::Claude, ToolKind::Gemini],
+            selected_skills: vec!["team-handoff".to_string()],
+            selected_mcp_servers: vec!["filesystem-memory".to_string()],
             warnings: vec!["Detected settings could not be mapped exactly.".to_string()],
         };
 
-        let manifest = selection_to_manifest(&selection);
-        let profile = manifest
+        let config = selection_to_config(&selection);
+        let profile = config
             .profiles
             .get("team-workspace")
             .expect("team profile should exist");
 
-        assert_eq!(manifest.workspace, "starter-workspace");
+        assert_eq!(config.workspace_name, "starter-home");
         assert_eq!(profile.memory.provider, "filesystem");
-        assert_eq!(
-            profile.memory.endpoint,
-            "./.openagents/memory/starter-workspace"
-        );
+        assert_eq!(profile.memory.endpoint, "profiles/team-workspace");
         assert_eq!(profile.memory.scope, ProfileScope::Team);
         assert!(profile.tools.contains_key(&ToolKind::Claude));
         assert!(profile.tools.contains_key(&ToolKind::Gemini));
+        assert_eq!(profile.skills, vec!["team-handoff".to_string()]);
     }
 
     #[test]
-    fn writes_serialized_manifest_to_disk() {
-        let temp = tempdir().expect("temp dir should exist");
-        let manifest_path = temp.path().join("workspace.yaml");
-        let selection = super::SetupSelection {
-            workspace_name: "starter".to_string(),
-            profile_preset: ProfilePreset::PersonalClient,
+    fn refreshes_catalog_items_after_profile_change() {
+        let mut selection = super::SetupSelection {
+            workspace_name: "starter-home".to_string(),
+            profile_preset: ProfilePreset::ProjectSandbox,
             memory_backend: MemoryBackendPreset::Filesystem,
             enabled_tools: vec![ToolKind::Codex],
-            warnings: Vec::new(),
+            selected_skills: vec![],
+            selected_mcp_servers: vec![],
+            warnings: vec![],
         };
 
-        write_manifest(&manifest_path, &selection).expect("manifest write should succeed");
+        refresh_catalog_recommendations(&mut selection);
 
-        let written = fs::read_to_string(&manifest_path).expect("manifest should be written");
-        let manifest = WorkspaceManifest::from_yaml_str(&written).expect("manifest should parse");
-
-        assert_eq!(manifest.workspace, "starter");
         assert!(
-            manifest.profiles["personal-client"]
-                .tools
-                .contains_key(&ToolKind::Codex)
+            selection
+                .selected_skills
+                .contains(&"starter-guidance".to_string())
         );
+        assert!(
+            selection
+                .selected_mcp_servers
+                .contains(&"filesystem-memory".to_string())
+        );
+    }
+
+    #[test]
+    fn reconstructs_selection_from_existing_config() {
+        let yaml = r#"
+schema: openagents/v1
+version: 1
+workspace_name: openagents-home
+default_profile: personal-client
+profiles:
+  personal-client:
+    memory:
+      provider: filesystem
+      endpoint: profiles/personal-client
+      scope: client
+    skills: [shared-memory]
+    mcp_servers: [filesystem-memory]
+    tools:
+      codex:
+        enabled: true
+        guidance_packs: [shared-memory]
+"#;
+
+        let config = OpenAgentsConfig::from_yaml_str(yaml).expect("config should parse");
+        let selection = selection_from_config(&config);
+
+        assert_eq!(selection.profile_preset, ProfilePreset::PersonalClient);
+        assert_eq!(selection.memory_backend, MemoryBackendPreset::Filesystem);
+        assert_eq!(selection.enabled_tools, vec![ToolKind::Codex]);
     }
 }
