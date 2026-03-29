@@ -220,7 +220,7 @@ pub fn apply_setup(
         attachments: existing
             .as_ref()
             .map(|plane| plane.attachments.clone())
-            .unwrap_or_else(openagents_core::AttachmentRegistry::new),
+            .unwrap_or_default(),
     };
     control.attach_current_path(cwd, selection.profile_preset.profile_name());
     control.save()?;

@@ -335,12 +335,11 @@ fn run_dashboard(control: &ControlPlane, cwd: &Path) -> Result<()> {
 
     let result = loop {
         terminal.draw(|frame| draw_dashboard(frame, control, cwd, &resolved, &report))?;
-        if event::poll(Duration::from_millis(120))? {
-            if let Event::Key(key) = event::read()? {
-                if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
-                    break Ok(());
-                }
-            }
+        if event::poll(Duration::from_millis(120))?
+            && let Event::Key(key) = event::read()?
+            && matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+        {
+            break Ok(());
         }
     };
     teardown_terminal(&mut terminal)?;

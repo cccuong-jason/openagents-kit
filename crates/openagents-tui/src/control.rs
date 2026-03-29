@@ -202,10 +202,10 @@ impl ControlPlane {
 }
 
 pub fn default_config_root() -> Result<PathBuf> {
-    if cfg!(windows) {
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            return Ok(PathBuf::from(appdata).join("OpenAgents"));
-        }
+    if cfg!(windows)
+        && let Ok(appdata) = std::env::var("APPDATA")
+    {
+        return Ok(PathBuf::from(appdata).join("OpenAgents"));
     }
 
     let home = std::env::var("HOME")
