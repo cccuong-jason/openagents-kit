@@ -75,13 +75,21 @@ Preferred public-path verification:
 
 ```powershell
 npx --yes github:cccuong-jason/openagents-kit#vX.Y.Z
-& "$HOME\.local\bin\openagents-kit.exe" --help
+openagents-kit --help
 ```
 
-If the shell still resolves an old binary from `C:\Users\jason\.cargo\bin\openagents-kit.exe`, replace it with the fresh release binary:
+Expected install locations:
+
+- Windows: `%LOCALAPPDATA%\OpenAgents\bin\openagents-kit.exe`
+- macOS/Linux: `~/.local/bin/openagents-kit`
+
+The installer also repairs the user `PATH` and refreshes an older user-owned `openagents-kit` that already wins on `PATH`, so `openagents-kit --help` should resolve to the new version without a manual copy step.
+
+If verification still shows an older binary, inspect resolution before patching anything:
 
 ```powershell
-Copy-Item "$HOME\.local\bin\openagents-kit.exe" "$HOME\.cargo\bin\openagents-kit.exe" -Force
+where.exe openagents-kit
+Get-Command openagents-kit -All | Format-Table -AutoSize CommandType,Name,Source
 ```
 
 ### npm publishing notes
