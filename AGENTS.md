@@ -103,3 +103,12 @@ npm trust github openagents-kit --repo cccuong-jason/openagents-kit --file relea
 - `npm trust github` also requires the one-time browser/2FA approval on this account.
 - The release workflow now tries trusted publishing first and falls back to `NPM_TOKEN` if it is configured.
 - If npm publish fails with `403` mentioning 2FA, use npm account 2FA or a granular access token with bypass 2FA enabled.
+- If `npm whoami` returns `401` or `npm publish` returns a misleading `404` for an existing package, the local npm token is stale or invalid. Re-authenticate first:
+
+```powershell
+npm logout
+npm login
+npm whoami
+```
+
+- If GitHub Actions shows the same misleading `404`, rotate the `NPM_TOKEN` repository secret because the CI token is stale or does not have publish permission.
