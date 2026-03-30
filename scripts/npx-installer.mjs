@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 
+import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 const REPO = process.env.OPENAGENTS_REPO ?? 'cccuong-jason/openagents-kit';
+const execFileAsync = promisify(execFile);
 
 export function resolveAssetName({ platform, arch }) {
   if (platform === 'win32' && arch === 'x64') {
@@ -25,12 +28,42 @@ export function resolveAssetName({ platform, arch }) {
   throw new Error(`Unsupported platform: ${platform} ${arch}`);
 }
 
-export function resolveInstallDir({ platform, homeDir }) {
-  if (platform === 'win32') {
-    return path.win32.join(homeDir, '.local', 'bin');
+function normalizePathForPlatform(value, platform) {
+  if (!value) {
+    return '';
   }
 
-  return `${homeDir}/.local/bin`;
+  return platform === 'win32'
+    ? path.win32.normalize(value).toLowerCase()
+    : path.posix.normalize(value);
+}
+
+function splitPathEntries(envPath, platform) {
+  if (!envPath) {
+    return [];
+  }
+
+  return envPath
+    .split(platform === 'win32' ? ';' : ':')
+    .map(entry => entry.trim())
+    .filter(Boolean);
+}
+
+export function resolveCanonicalInstallDir({
+  platform,
+  homeDir,
+  localAppData = process.env.LOCALAPPDATA,
+}) {
+  if (platform === 'win32') {
+    const baseDir = localAppData ?? path.win32.join(homeDir, 'AppData', 'Local');
+    return path.win32.join(baseDir, 'OpenAgents', 'bin');
+  }
+
+  return path.posix.join(homeDir, '.local', 'bin');
+}
+
+export function resolveInstallDir(options) {
+  return resolveCanonicalInstallDir(options);
 }
 
 export function resolveBinaryName(platform) {
@@ -53,12 +86,105 @@ export function resolveDownloadUrl({ repo = REPO, version, assetName }) {
   return `https://github.com/${repo}/releases/download/${version}/${assetName}`;
 }
 
-export function pathInstruction({ platform, installDir }) {
-  if (platform === 'win32') {
-    return `Add ${installDir} to your PATH if openagents-kit is not recognized yet.`;
+export function isPathOnEnvPath({ candidate, envPath, platform }) {
+  const normalizedCandidate = normalizePathForPlatform(candidate, platform);
+  return splitPathEntries(envPath, platform)
+    .map(entry => normalizePathForPlatform(entry, platform))
+    .includes(normalizedCandidate);
+}
+
+function isWithinUserHome(candidatePath, homeDir, platform) {
+  const normalizedCandidate = normalizePathForPlatform(candidatePath, platform);
+  const normalizedHome = normalizePathForPlatform(homeDir, platform);
+  const separator = platform === 'win32' ? '\\' : '/';
+  return normalizedCandidate === normalizedHome || normalizedCandidate.startsWith(`${normalizedHome}${separator}`);
+}
+
+export function shouldRefreshExistingBinary({
+  resolvedBinaryPath,
+  canonicalBinaryPath,
+  platform,
+  homeDir,
+}) {
+  if (!resolvedBinaryPath) {
+    return false;
   }
 
-  return `Add ${installDir} to your PATH if needed, then run openagents-kit.`;
+  const normalizedResolved = normalizePathForPlatform(resolvedBinaryPath, platform);
+  const normalizedCanonical = normalizePathForPlatform(canonicalBinaryPath, platform);
+  if (normalizedResolved === normalizedCanonical) {
+    return false;
+  }
+
+  const binaryName = platform === 'win32' ? 'openagents-kit.exe' : 'openagents-kit';
+  const normalizedBinaryName = platform === 'win32' ? binaryName.toLowerCase() : binaryName;
+  if (!normalizedResolved.endsWith(normalizedBinaryName)) {
+    return false;
+  }
+
+  return isWithinUserHome(resolvedBinaryPath, homeDir, platform);
+}
+
+export function findRefreshCandidate({
+  resolvedBinaryPaths,
+  canonicalBinaryPath,
+  platform,
+  homeDir,
+}) {
+  return resolvedBinaryPaths.find(candidate => shouldRefreshExistingBinary({
+    resolvedBinaryPath: candidate,
+    canonicalBinaryPath,
+    platform,
+    homeDir,
+  }));
+}
+
+export function resolvePosixProfilePath({
+  homeDir,
+  shellPath,
+  existingProfiles = [],
+}) {
+  const profileCandidates = [];
+  const shellName = path.posix.basename(shellPath ?? '');
+  if (shellName === 'zsh') {
+    profileCandidates.push('.zshrc', '.zprofile', '.profile');
+  } else if (shellName === 'bash') {
+    profileCandidates.push('.bashrc', '.bash_profile', '.profile');
+  } else if (shellName === 'fish') {
+    profileCandidates.push('.config/fish/config.fish', '.profile');
+  } else {
+    profileCandidates.push('.profile', '.bashrc', '.zshrc');
+  }
+
+  const absoluteCandidates = profileCandidates.map(candidate => path.posix.join(homeDir, candidate));
+  const existingSet = new Set(existingProfiles);
+  return absoluteCandidates.find(candidate => existingSet.has(candidate)) ?? absoluteCandidates[0];
+}
+
+export function buildPosixPathSnippet(installDir, profilePath = '') {
+  if (profilePath.endsWith('config.fish')) {
+    return `\n# Added by OpenAgents installer\nfish_add_path ${installDir}\n`;
+  }
+
+  return `\n# Added by OpenAgents installer\nexport PATH="${installDir}:$PATH"\n`;
+}
+
+export function summarizeInstall({
+  canonicalInstallDir,
+  pathUpdated,
+  refreshedBinary,
+}) {
+  const lines = [`Installed to ${canonicalInstallDir}`];
+  if (pathUpdated) {
+    lines.push('Updated your user PATH to include the OpenAgents bin directory.');
+  }
+  if (refreshedBinary) {
+    lines.push(`Refreshed the existing PATH-winning binary at ${refreshedBinary}.`);
+  }
+  if (pathUpdated) {
+    lines.push('Open a new shell if your current terminal does not pick up the PATH change immediately.');
+  }
+  return lines;
 }
 
 async function downloadFile(url, destination, redirectCount = 0) {
@@ -104,6 +230,108 @@ async function downloadFile(url, destination, redirectCount = 0) {
   });
 }
 
+async function listResolvedBinaryPaths(platform) {
+  try {
+    if (platform === 'win32') {
+      const { stdout } = await execFileAsync('where.exe', ['openagents-kit']);
+      return stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    }
+
+    const { stdout } = await execFileAsync('which', ['-a', 'openagents-kit']);
+    return stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function ensureWindowsUserPath(installDir) {
+  const currentPath = await execFileAsync('powershell.exe', [
+    '-NoProfile',
+    '-Command',
+    "[Environment]::GetEnvironmentVariable('Path','User')",
+  ]);
+  const userPath = currentPath.stdout.trim();
+  if (isPathOnEnvPath({ candidate: installDir, envPath: userPath, platform: 'win32' })) {
+    return false;
+  }
+
+  const escapedInstallDir = installDir.replace(/'/g, "''");
+  const script = [
+    "$current = [Environment]::GetEnvironmentVariable('Path','User')",
+    "if (-not $current) { $current = '' }",
+    `$install = '${escapedInstallDir}'`,
+    "$parts = @()",
+    "if ($current) { $parts = $current -split ';' | Where-Object { $_ -ne '' } }",
+    "if ($parts -notcontains $install) {",
+    "  $newPath = if ($current) { \"$current;$install\" } else { $install }",
+    "  [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')",
+    "  Write-Output 'UPDATED'",
+    "} else {",
+    "  Write-Output 'UNCHANGED'",
+    "}",
+  ].join('; ');
+  const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-Command', script]);
+  return stdout.includes('UPDATED');
+}
+
+async function ensurePosixPath(installDir) {
+  if (isPathOnEnvPath({ candidate: installDir, envPath: process.env.PATH ?? '', platform: process.platform })) {
+    return { pathUpdated: false, profilePath: null };
+  }
+
+  const homeDir = os.homedir();
+  const candidates = [
+    path.posix.join(homeDir, '.zshrc'),
+    path.posix.join(homeDir, '.bashrc'),
+    path.posix.join(homeDir, '.profile'),
+    path.posix.join(homeDir, '.config', 'fish', 'config.fish'),
+  ];
+  const existingProfiles = [];
+  await Promise.all(candidates.map(async candidate => {
+    try {
+      await fs.access(candidate);
+      existingProfiles.push(candidate);
+    } catch {
+      // ignore missing profile
+    }
+  }));
+
+  const profilePath = resolvePosixProfilePath({
+    homeDir,
+    shellPath: process.env.SHELL ?? '',
+    existingProfiles,
+  });
+  const snippet = buildPosixPathSnippet(installDir, profilePath);
+  const current = await fs.readFile(profilePath, 'utf8').catch(() => '');
+  if (current.includes(installDir)) {
+    return { pathUpdated: false, profilePath };
+  }
+
+  await fs.mkdir(path.dirname(profilePath), { recursive: true });
+  await fs.appendFile(profilePath, snippet);
+  return { pathUpdated: true, profilePath };
+}
+
+async function ensurePathContainsInstallDir(installDir, platform) {
+  if (platform === 'win32') {
+    return { pathUpdated: await ensureWindowsUserPath(installDir), profilePath: null };
+  }
+
+  return ensurePosixPath(installDir);
+}
+
+export function pathInstruction({ platform, installDir, pathUpdated }) {
+  if (pathUpdated) {
+    return 'Open a new shell if your current terminal does not pick up the PATH change immediately.';
+  }
+
+  if (platform === 'win32') {
+    return `Your PATH already includes ${installDir}.`;
+  }
+
+  return `Your PATH already includes ${installDir}.`;
+}
+
 async function install() {
   const packageVersion = process.env.npm_package_version;
   const version = process.argv[2] ?? resolveReleaseTag(packageVersion);
@@ -112,11 +340,16 @@ async function install() {
   const homeDir = os.homedir();
 
   const assetName = resolveAssetName({ platform, arch });
-  const installDir = resolveInstallDir({ platform, homeDir });
+  const installDir = resolveCanonicalInstallDir({
+    platform,
+    homeDir,
+    localAppData: process.env.LOCALAPPDATA,
+  });
   const binaryName = resolveBinaryName(platform);
   const downloadUrl = resolveDownloadUrl({ version, assetName });
   const destination = path.join(installDir, binaryName);
   const tempFile = path.join(os.tmpdir(), `${binaryName}.${Date.now()}`);
+  const resolvedBinaryPaths = await listResolvedBinaryPaths(platform);
 
   await fs.mkdir(installDir, { recursive: true });
   console.log(`Installing OpenAgents Kit ${version} for ${platform}/${arch}...`);
@@ -129,9 +362,27 @@ async function install() {
   await fs.rm(destination, { force: true });
   await fs.rename(tempFile, destination);
 
+  const { pathUpdated } = await ensurePathContainsInstallDir(installDir, platform);
+  const refreshCandidate = findRefreshCandidate({
+    resolvedBinaryPaths,
+    canonicalBinaryPath: destination,
+    platform,
+    homeDir,
+  });
+  if (refreshCandidate) {
+    await fs.copyFile(destination, refreshCandidate);
+  }
+
   console.log(`Installed ${binaryName} to ${destination}`);
+  for (const line of summarizeInstall({
+    canonicalInstallDir: installDir,
+    pathUpdated,
+    refreshedBinary: refreshCandidate,
+  })) {
+    console.log(line);
+  }
   console.log('Next step: run openagents-kit');
-  console.log(pathInstruction({ platform, installDir }));
+  console.log(pathInstruction({ platform, installDir, pathUpdated }));
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
