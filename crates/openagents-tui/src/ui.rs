@@ -605,15 +605,20 @@ fn hero_lines(state: HeroState, title: &str, tick: usize) -> Vec<Line<'static>> 
             "................................................................................",
         ),
         line_plain(""),
-        line_plain("          .-----------------------------------------------------------."),
+        line_plain("       .-----------------------------------------------------------------."),
         line_plain(format!(
-            "          |  {pulse}  {visor}    OPENAGENTS OPERATOR CONSOLE              |"
+            "       |  {pulse}  OPENAGENTS SETUP                                {pulse}  {pulse}  {pulse}       |"
         )),
-        line_plain("      .---|      .----.          .------.        .-----------------. |---."),
-        line_plain("      |   |     /|_||_|\\         | sync |        | guided setup    | |   |"),
-        line_plain("      |   |     ||____||         | ctrl |        | one turn at a   | |   |"),
-        line_plain("      |___|_____|/____\\|_________| plane|________| time            |_|___|"),
-        line_subtle("                Press Enter to accept the recommendation faster."),
+        line_plain("       |                                                               .-. |"),
+        line_plain(format!(
+            "       |      .----.        {visor}                    .------.      (   )|"
+        )),
+        line_plain("       |     /|_||_|\\       .--.         .--------.     | sync |      `-` ||"),
+        line_plain("       |     ||____||      /_||_\\        | memory |     | ctrl |    .---. ||"),
+        line_plain(
+            "       |_____|/____\\|______\\____/________| layer  |_____| plan |____|___|_||",
+        ),
+        line_subtle("                 One active turn at a time. Earlier turns collapse upward."),
     ]
 }
 
@@ -1081,7 +1086,12 @@ fn revealed_lines(lines: Vec<Line<'static>>, motion_tick: usize) -> Vec<Line<'st
     } else {
         usize::min(lines.len(), usize::max(1, (motion_tick / 2) + 1))
     };
-    lines.into_iter().take(visible).collect()
+    let total = lines.len();
+    let mut revealed = lines.into_iter().take(visible).collect::<Vec<_>>();
+    if visible < total {
+        revealed.push(line_subtle("█"));
+    }
+    revealed
 }
 
 fn setup_history(app: &SetupApp) -> String {
@@ -1252,8 +1262,8 @@ fn join_or_none(items: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        BOOT_TICKS, SetupApp, SetupScreen, active_turn_lines, boot_loading_message, screen_status,
-        setup_controls,
+        BOOT_TICKS, HeroState, SetupApp, SetupScreen, active_turn_lines, boot_loading_message,
+        hero_lines, revealed_lines, screen_status, setup_controls,
     };
     use crate::detection::DetectionReport;
     use crate::setup::{
@@ -1358,6 +1368,20 @@ mod tests {
                 SetupQuestion::Mcps,
                 SetupQuestion::Confirm
             ]
+        );
+    }
+
+    #[test]
+    fn reveal_animation_keeps_a_cursor_until_the_turn_is_fully_visible() {
+        let partial = revealed_lines(hero_lines(HeroState::Listening, "Test", 0), 0);
+
+        assert!(
+            partial
+                .iter()
+                .map(|line| line.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+                .contains("█")
         );
     }
 }
