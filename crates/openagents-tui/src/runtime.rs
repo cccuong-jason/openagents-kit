@@ -65,6 +65,7 @@ pub enum Commands {
         #[arg(long)]
         profile: Option<String>,
     },
+    History,
     Tui,
 }
 
@@ -145,6 +146,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             &cwd,
             profile.as_deref(),
         ),
+        Some(Commands::History) => history_command(cli.config.as_deref()),
         Some(Commands::Tui) | None => {
             ui::run_tui(cli.config.as_deref(), cli.manifest.as_deref(), &cwd)
         }
@@ -179,11 +181,15 @@ pub fn recommended_setup_selection(
     config_override: Option<&Path>,
     manifest_override: Option<&Path>,
     cwd: &Path,
-) -> Result<(DetectionReport, SetupSelection)> {
+) -> Result<(DetectionReport, SetupSelection, bool)> {
     let report = load_detection_report()?;
-    let selection = existing_selection(config_override, manifest_override, cwd)
-        .unwrap_or_else(|| recommended_selection(&report));
-    Ok((report, selection))
+    let existing = existing_selection(config_override, manifest_override, cwd);
+    let selection = existing.unwrap_or_else(|| recommended_selection(&report));
+    Ok((
+        report,
+        selection,
+        ControlPlane::load(config_override, manifest_override).is_ok(),
+    ))
 }
 
 pub fn resolve_config_path(config_override: Option<&Path>) -> Result<PathBuf> {
@@ -225,6 +231,33 @@ pub fn apply_setup(
     control.attach_current_path(cwd, selection.profile_preset.profile_name());
     control.save()?;
     sync_control_plane(&control, selection.profile_preset.profile_name(), false)
+}
+
+pub fn write_setup_history(config_override: Option<&Path>, transcript: &str) -> Result<PathBuf> {
+    let config_path = resolve_config_path(config_override)?;
+    let root = config_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let history_dir = root.join("history");
+    fs::create_dir_all(&history_dir)?;
+    let history_path = history_dir.join("setup.log");
+    fs::write(&history_path, transcript)?;
+    Ok(history_path)
+}
+
+pub fn read_setup_history(config_override: Option<&Path>) -> Result<String> {
+    let config_path = resolve_config_path(config_override)?;
+    let root = config_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let history_path = root.join("history").join("setup.log");
+    if !history_path.exists() {
+        return Ok("No setup history recorded yet.".to_string());
+    }
+    fs::read_to_string(&history_path)
+        .with_context(|| format!("failed to read setup history at {}", history_path.display()))
 }
 
 pub fn sync_control_plane(
@@ -539,6 +572,11 @@ fn attach_command(
     Ok(())
 }
 
+fn history_command(config_override: Option<&Path>) -> Result<()> {
+    println!("{}", read_setup_history(config_override)?);
+    Ok(())
+}
+
 fn join_display_paths(paths: &[PathBuf]) -> String {
     if paths.is_empty() {
         "none".to_string()
@@ -571,7 +609,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{apply_setup, sync_control_plane};
+    use super::{apply_setup, read_setup_history, sync_control_plane, write_setup_history};
     use crate::control::{ControlPlane, device_name};
     use crate::setup::{MemoryBackendPreset, ProfilePreset, SetupSelection, selection_to_config};
     use openagents_core::{AttachmentRegistry, DeviceOverlay, OpenAgentsConfig, WorkspaceManifest};
@@ -664,5 +702,19 @@ profiles:
 
         assert_eq!(config.workspace_name, "starter-workspace");
         assert!(config.profiles.contains_key("personal-client"));
+    }
+
+    #[test]
+    fn persists_setup_history_under_config_root() {
+        let temp = tempdir().expect("temp dir should exist");
+        let root = temp.path().join("openagents-config");
+        fs::create_dir_all(&root).expect("config root should exist");
+
+        write_setup_history(Some(&root), "OpenAgents> I fixed the gaps.\nYou> 1")
+            .expect("history should write");
+        let history = read_setup_history(Some(&root)).expect("history should load");
+
+        assert!(history.contains("OpenAgents> I fixed the gaps."));
+        assert!(root.join("history").join("setup.log").exists());
     }
 }
