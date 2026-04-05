@@ -88,10 +88,7 @@ pub fn recommended_selection(detections: &DetectionReport) -> SetupSelection {
     enabled_tools.dedup();
 
     let mut warnings = if detections.detections.is_empty() {
-        vec![
-            "I did not find a trusted tool footprint, so I prepared a starter control plane."
-                .to_string(),
-        ]
+        vec!["I did not find a trusted tool footprint, so I prepared a starter setup.".to_string()]
     } else {
         vec![
             "I can sync the same desired capabilities across your enabled tools after setup."
@@ -227,7 +224,7 @@ pub fn selection_from_config(config: &OpenAgentsConfig) -> SetupSelection {
         enabled_tools,
         selected_skills: profile.skills.clone(),
         selected_mcp_servers: profile.mcp_servers.clone(),
-        warnings: vec!["I imported your existing OpenAgents control plane.".to_string()],
+        warnings: vec!["I imported your existing OpenAgents setup.".to_string()],
     }
 }
 
@@ -304,7 +301,9 @@ pub fn setup_questions(
         questions.push(SetupQuestion::Mcps);
     }
 
-    questions.push(SetupQuestion::Confirm);
+    if !questions.is_empty() || !existing_control_plane {
+        questions.push(SetupQuestion::Confirm);
+    }
     questions
 }
 
@@ -444,7 +443,7 @@ profiles:
     }
 
     #[test]
-    fn skips_healthy_follow_up_questions_when_existing_setup_is_already_complete() {
+    fn skips_setup_questions_when_existing_setup_is_already_complete() {
         let report = DetectionReport {
             detections: vec![
                 ToolDetection {
@@ -475,7 +474,7 @@ profiles:
 
         let questions = setup_questions(&report, &selection, true);
 
-        assert_eq!(questions, vec![SetupQuestion::Confirm]);
+        assert!(questions.is_empty());
     }
 
     #[test]
