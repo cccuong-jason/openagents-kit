@@ -11,7 +11,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::catalog::{CatalogItem, curated_items};
 use crate::control::ControlPlane;
@@ -54,6 +54,36 @@ struct AnsweredTurn {
     answer: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HomeAction {
+    Sync,
+    Doctor,
+    History,
+    Setup,
+    Exit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HomeHeroState {
+    Ready,
+    Working,
+}
+
+#[derive(Debug, Clone)]
+struct HomeApp {
+    action_index: usize,
+    status: String,
+    intro: Option<String>,
+    result_lines: Vec<Line<'static>>,
+    hero_state: HomeHeroState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HomeOutcome {
+    Exit,
+    LaunchSetup,
+}
+
 pub struct SetupApp {
     pub report: DetectionReport,
     pub selection: SetupSelection,
@@ -66,6 +96,11 @@ pub struct SetupApp {
     pub completion: Option<SyncSummary>,
     answered_turns: Vec<AnsweredTurn>,
     current_question_index: usize,
+    profile_cursor: usize,
+    memory_cursor: usize,
+    tool_cursor: usize,
+    skill_cursor: usize,
+    mcp_cursor: usize,
 }
 
 impl SetupApp {
@@ -74,6 +109,8 @@ impl SetupApp {
         selection: SetupSelection,
         existing_control_plane: bool,
     ) -> Self {
+        let profile_cursor = profile_index(selection.profile_preset);
+        let memory_cursor = memory_index(selection.memory_backend);
         Self {
             questions: setup_questions(&report, &selection, existing_control_plane),
             report,
@@ -86,6 +123,11 @@ impl SetupApp {
             completion: None,
             answered_turns: Vec::new(),
             current_question_index: 0,
+            profile_cursor,
+            memory_cursor,
+            tool_cursor: 0,
+            skill_cursor: 0,
+            mcp_cursor: 0,
         }
     }
 
@@ -166,8 +208,46 @@ impl SetupApp {
         self.questions.get(self.current_question_index).copied()
     }
 
-    fn collapsed_turns(&self) -> usize {
-        self.answered_turns.len()
+    fn cycle_profile(&mut self, forward: bool) {
+        self.profile_cursor = wrap_cursor(self.profile_cursor, 3, forward);
+        self.selection.profile_preset = profile_preset_from_cursor(self.profile_cursor);
+        crate::setup::refresh_catalog_recommendations(&mut self.selection);
+    }
+
+    fn cycle_memory(&mut self, forward: bool) {
+        self.memory_cursor = wrap_cursor(self.memory_cursor, 2, forward);
+        self.selection.memory_backend = memory_preset_from_cursor(self.memory_cursor);
+        crate::setup::refresh_catalog_recommendations(&mut self.selection);
+    }
+
+    fn move_tool_cursor(&mut self, forward: bool) {
+        self.tool_cursor = wrap_cursor(self.tool_cursor, tool_order().len(), forward);
+    }
+
+    fn move_skill_cursor(&mut self, forward: bool) {
+        self.skill_cursor = wrap_cursor(self.skill_cursor, skill_catalog().len(), forward);
+    }
+
+    fn move_mcp_cursor(&mut self, forward: bool) {
+        self.mcp_cursor = wrap_cursor(self.mcp_cursor, mcp_catalog().len(), forward);
+    }
+
+    fn toggle_current_tool(&mut self) {
+        if let Some(tool) = tool_order().get(self.tool_cursor).copied() {
+            toggle_item(&mut self.selection.enabled_tools, tool);
+        }
+    }
+
+    fn toggle_current_skill(&mut self) {
+        if let Some(item) = skill_catalog().get(self.skill_cursor) {
+            toggle_string(&mut self.selection.selected_skills, item.id);
+        }
+    }
+
+    fn toggle_current_mcp(&mut self) {
+        if let Some(item) = mcp_catalog().get(self.mcp_cursor) {
+            toggle_string(&mut self.selection.selected_mcp_servers, item.id);
+        }
     }
 
     fn apply_choice(&mut self, digit: usize) {
@@ -208,7 +288,7 @@ impl SetupApp {
             }
             SetupScreen::Confirm => {
                 if digit == 1 {
-                    self.status = "Press Enter and I’ll write the control plane.".to_string();
+                    self.status = "Press Enter and I’ll write the setup changes.".to_string();
                 }
             }
             _ => {}
@@ -262,8 +342,45 @@ pub fn run_tui(
     cwd: &Path,
 ) -> Result<()> {
     match ControlPlane::load(config_override, manifest_override) {
-        Ok(control) => run_dashboard(&control, cwd),
+        Ok(control) => run_home(&control, cwd, None, config_override, manifest_override),
         Err(_) => run_setup(config_override, manifest_override, cwd, false),
+    }
+}
+
+impl HomeApp {
+    fn new(intro: Option<String>) -> Self {
+        Self {
+            action_index: 0,
+            status: "Your setup is healthy and ready for the next step.".to_string(),
+            intro,
+            result_lines: Vec::new(),
+            hero_state: HomeHeroState::Ready,
+        }
+    }
+
+    fn move_action(&mut self, forward: bool) {
+        self.action_index = wrap_cursor(self.action_index, home_actions().len(), forward);
+    }
+
+    fn current_action(&self) -> HomeAction {
+        home_actions()[self.action_index]
+    }
+
+    fn show_result(
+        &mut self,
+        hero_state: HomeHeroState,
+        status: String,
+        result_lines: Vec<Line<'static>>,
+    ) {
+        self.hero_state = hero_state;
+        self.status = status;
+        self.result_lines = result_lines;
+    }
+
+    fn show_error(&mut self, status: String) {
+        self.hero_state = HomeHeroState::Ready;
+        self.status = status;
+        self.result_lines.clear();
     }
 }
 
@@ -280,6 +397,20 @@ pub fn run_setup(
         let config = crate::setup::selection_to_config(&selection);
         println!("{}", serde_yaml::to_string(&config)?);
         return Ok(());
+    }
+
+    if existing_control_plane && setup_questions(&report, &selection, true).is_empty() {
+        let control = ControlPlane::load(config_override, manifest_override)?;
+        return run_home(
+            &control,
+            cwd,
+            Some(
+                "I checked your saved setup and everything important is already aligned."
+                    .to_string(),
+            ),
+            config_override,
+            manifest_override,
+        );
     }
 
     enable_raw_mode().context("failed to enable raw mode")?;
@@ -336,6 +467,34 @@ fn setup_loop(
                         }
                         SetupScreen::Complete => return Ok(()),
                     },
+                    KeyCode::Left => match app.screen {
+                        SetupScreen::AskProfile => app.cycle_profile(false),
+                        SetupScreen::AskMemory => app.cycle_memory(false),
+                        SetupScreen::AskTools => app.toggle_current_tool(),
+                        SetupScreen::AskSkills => app.toggle_current_skill(),
+                        SetupScreen::AskMcps => app.toggle_current_mcp(),
+                        _ => {}
+                    },
+                    KeyCode::Right => match app.screen {
+                        SetupScreen::AskProfile => app.cycle_profile(true),
+                        SetupScreen::AskMemory => app.cycle_memory(true),
+                        SetupScreen::AskTools => app.toggle_current_tool(),
+                        SetupScreen::AskSkills => app.toggle_current_skill(),
+                        SetupScreen::AskMcps => app.toggle_current_mcp(),
+                        _ => {}
+                    },
+                    KeyCode::Up => match app.screen {
+                        SetupScreen::AskTools => app.move_tool_cursor(false),
+                        SetupScreen::AskSkills => app.move_skill_cursor(false),
+                        SetupScreen::AskMcps => app.move_mcp_cursor(false),
+                        _ => {}
+                    },
+                    KeyCode::Down => match app.screen {
+                        SetupScreen::AskTools => app.move_tool_cursor(true),
+                        SetupScreen::AskSkills => app.move_skill_cursor(true),
+                        SetupScreen::AskMcps => app.move_mcp_cursor(true),
+                        _ => {}
+                    },
                     KeyCode::Char(value) if value.is_ascii_digit() => {
                         if let Some(digit) = value.to_digit(10) {
                             app.apply_choice(digit as usize);
@@ -350,28 +509,75 @@ fn setup_loop(
     }
 }
 
-fn run_dashboard(control: &ControlPlane, cwd: &Path) -> Result<()> {
+fn run_home(
+    control: &ControlPlane,
+    cwd: &Path,
+    intro: Option<String>,
+    config_override: Option<&Path>,
+    manifest_override: Option<&Path>,
+) -> Result<()> {
     enable_raw_mode().context("failed to enable raw mode")?;
     let mut terminal = setup_terminal()?;
     let active_profile = control.active_profile_name(cwd, None);
     let resolved = control.resolved_profile(&active_profile)?;
     let report = runtime::load_detection_report()?;
+    let mut app = HomeApp::new(intro);
 
-    let result = loop {
-        terminal.draw(|frame| draw_dashboard(frame, control, cwd, &resolved, &report))?;
-        if event::poll(Duration::from_millis(120))?
+    let result: Result<HomeOutcome> = loop {
+        terminal.draw(|frame| draw_home(frame, &app, control, cwd, &resolved, &report))?;
+        if event::poll(Duration::from_millis(110))?
             && let Event::Key(key) = event::read()?
-            && matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
         {
-            break Ok(());
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => break Ok(HomeOutcome::Exit),
+                KeyCode::Up => app.move_action(false),
+                KeyCode::Down => app.move_action(true),
+                KeyCode::Enter => match app.current_action() {
+                    HomeAction::Sync => {
+                        match runtime::sync_control_plane(control, &resolved.name, false) {
+                            Ok(summary) => app.show_result(
+                                HomeHeroState::Working,
+                                "I resynced the managed outputs from your saved OpenAgents setup."
+                                    .to_string(),
+                                sync_result_lines(&summary),
+                            ),
+                            Err(error) => {
+                                app.show_error(format!("I could not sync right now: {error}"))
+                            }
+                        }
+                    }
+                    HomeAction::Doctor => app.show_result(
+                        HomeHeroState::Ready,
+                        "I checked the current health of your saved setup.".to_string(),
+                        doctor_result_lines(control, cwd, &resolved, &report),
+                    ),
+                    HomeAction::History => match runtime::read_setup_history(Some(&control.root)) {
+                        Ok(history) => app.show_result(
+                            HomeHeroState::Ready,
+                            "Here is the latest stored setup transcript.".to_string(),
+                            history_result_lines(&history),
+                        ),
+                        Err(error) => {
+                            app.show_error(format!("I could not load setup history: {error}"))
+                        }
+                    },
+                    HomeAction::Setup => break Ok(HomeOutcome::LaunchSetup),
+                    HomeAction::Exit => break Ok(HomeOutcome::Exit),
+                },
+                _ => {}
+            }
         }
     };
     teardown_terminal(&mut terminal)?;
-    result
+    match result? {
+        HomeOutcome::Exit => Ok(()),
+        HomeOutcome::LaunchSetup => run_setup(config_override, manifest_override, cwd, false),
+    }
 }
 
-fn draw_dashboard(
+fn draw_home(
     frame: &mut ratatui::Frame<'_>,
+    app: &HomeApp,
     control: &ControlPlane,
     cwd: &Path,
     profile: &openagents_core::ResolvedProfile,
@@ -382,131 +588,36 @@ fn draw_dashboard(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(10),
-            Constraint::Length(9),
             Constraint::Min(10),
-            Constraint::Length(3),
+            Constraint::Length(1),
         ])
         .split(area);
-    let top = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(40), Constraint::Min(10)])
-        .split(chunks[1]);
-    let middle = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[2]);
 
     frame.render_widget(
-        Paragraph::new(hero_lines(HeroState::Ready, "OpenAgents Control Center", 0))
-            .block(panel("OpenAgents"))
-            .wrap(Wrap { trim: false }),
+        Paragraph::new(hero_lines(
+            match app.hero_state {
+                HomeHeroState::Ready => HeroState::Ready,
+                HomeHeroState::Working => HeroState::Scanning,
+            },
+            "Your setup is healthy and ready",
+            app.action_index,
+        ))
+        .wrap(Wrap { trim: false }),
         chunks[0],
     );
 
-    frame.render_widget(
-        Paragraph::new(vec![
-            line_plain(format!("workspace  {}", control.config.workspace_name)),
-            line_plain(format!("device     {}", control.overlay.device_name)),
-            line_plain(format!(
-                "project    {}",
-                cwd.file_name()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("current-folder")
-            )),
-            line_plain(""),
-            line_accent(format!("profile    {}", profile.name)),
-            line_plain(format!("memory     {}", profile.memory.provider)),
-            line_plain(format!(
-                "tools      {}",
-                profile
-                    .tools
-                    .keys()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
-        ])
-        .block(panel("Session")),
-        top[0],
-    );
+    let mut lines = home_intro_lines(app, control, cwd, profile, report);
+    lines.push(line_plain(""));
+    lines.extend(home_action_lines(app));
+    if !app.result_lines.is_empty() {
+        lines.push(line_plain(""));
+        lines.extend(app.result_lines.clone());
+    }
 
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), chunks[1]);
     frame.render_widget(
-        Paragraph::new(vec![
-            line_plain("One global control plane now drives the desired state for this device and this project attachment."),
-            line_plain("Run `openagents-kit setup` when you want the guided conversation again."),
-            line_plain(""),
-            line_accent(format!("config root  {}", control.root.display())),
-            line_accent(format!("managed root {}", control.managed_root().display())),
-            line_accent(format!(
-                "attachment   {}",
-                control
-                    .attached_profile_for(cwd)
-                    .unwrap_or_else(|| "default-profile".to_string())
-            )),
-        ])
-        .block(panel("Status")),
-        top[1],
-    );
-
-    frame.render_widget(
-        Paragraph::new(vec![
-            line_plain("Desired Capabilities"),
-            line_plain(""),
-            line_plain(format!("skills: {}", join_or_none(&profile.skills))),
-            line_plain(format!(
-                "mcp servers: {}",
-                join_or_none(&profile.mcp_servers)
-            )),
-            line_plain(""),
-            line_plain("Local Discovery"),
-            line_plain(format!(
-                "tools seen: {}",
-                report
-                    .detections
-                    .iter()
-                    .map(|item| item.tool.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
-            line_plain(format!(
-                "skills seen: {}",
-                join_or_none(&report.installed_skills)
-            )),
-            line_plain(format!(
-                "mcp seen: {}",
-                join_or_none(&report.installed_mcp_servers)
-            )),
-        ])
-        .block(panel("Health")),
-        middle[0],
-    );
-
-    frame.render_widget(
-        Paragraph::new(vec![
-            line_plain("Next Actions"),
-            line_plain(""),
-            line_accent("openagents-kit sync"),
-            line_plain("Reconcile the global desired state into managed tool outputs."),
-            line_plain(""),
-            line_accent("openagents-kit doctor"),
-            line_plain("Check drift, missing tools, missing skills, and missing MCP servers."),
-            line_plain(""),
-            line_accent("openagents-kit history"),
-            line_plain("Review the latest guided setup transcript after onboarding."),
-        ])
-        .block(panel("Guide")),
-        middle[1],
-    );
-
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("q", Style::default().fg(LIME).add_modifier(Modifier::BOLD)),
-            Span::styled(" exit  ", Style::default().fg(SLATE)),
-            Span::styled("openagents-kit setup", Style::default().fg(TEAL)),
-            Span::styled(" rerun the assistant interview", Style::default().fg(SLATE)),
-        ]))
-        .block(panel("Controls")),
-        chunks[3],
+        Paragraph::new(line_subtle("↑/↓ choose  |  Enter run  |  q quit")),
+        chunks[2],
     );
 }
 
@@ -515,9 +626,9 @@ fn draw_setup(frame: &mut ratatui::Frame<'_>, app: &SetupApp) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(11),
+            Constraint::Length(10),
             Constraint::Min(12),
-            Constraint::Length(3),
+            Constraint::Length(1),
         ])
         .split(area);
 
@@ -533,108 +644,133 @@ fn draw_setup(frame: &mut ratatui::Frame<'_>, app: &SetupApp) {
             hero_title(app.screen, app.existing_control_plane),
             app.boot_tick as usize + app.motion_tick,
         ))
-        .block(panel("OpenAgents"))
         .wrap(Wrap { trim: false }),
         chunks[0],
     );
 
     frame.render_widget(
-        Paragraph::new(setup_body_lines(app))
-            .block(panel(body_title(app.screen)))
-            .wrap(Wrap { trim: false }),
+        Paragraph::new(setup_body_lines(app)).wrap(Wrap { trim: false }),
         chunks[1],
     );
 
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(setup_controls(app.screen), Style::default().fg(SLATE)),
-            Span::raw("  "),
-            Span::styled(&app.status, Style::default().fg(TEAL)),
-        ]))
-        .block(panel("Controls")),
+        Paragraph::new(line_subtle(format!(
+            "{}  |  {}",
+            setup_controls(app.screen),
+            app.status
+        ))),
         chunks[2],
     );
 }
 
 fn hero_title(screen: SetupScreen, existing_control_plane: bool) -> &'static str {
     match screen {
-        SetupScreen::Boot => "OpenAgents is checking this device",
-        SetupScreen::Detection if existing_control_plane => {
-            "I found your existing OpenAgents control plane"
-        }
+        SetupScreen::Boot => "I’m scanning this device",
+        SetupScreen::Detection if existing_control_plane => "I found your existing setup",
         SetupScreen::Detection => "I found the starting point for your setup",
-        SetupScreen::AskProfile => "Let me shape the profile first",
-        SetupScreen::AskMemory => "Now I need a memory layer",
-        SetupScreen::AskTools => "I only need to touch the tool gaps",
-        SetupScreen::AskSkills => "I found a missing shared skill layer",
+        SetupScreen::AskProfile => "I’m shaping the profile",
+        SetupScreen::AskMemory => "I’m filling the memory gap",
+        SetupScreen::AskTools => "I’m lining up your tools",
+        SetupScreen::AskSkills => "I found missing shared skills",
         SetupScreen::AskMcps => "I found missing MCP capabilities",
         SetupScreen::Confirm => "I’m ready to write the missing pieces",
-        SetupScreen::Complete => "Your OpenAgents control plane is ready",
-    }
-}
-
-fn body_title(screen: SetupScreen) -> &'static str {
-    match screen {
-        SetupScreen::Boot => "Boot",
-        SetupScreen::Detection => "Assistant",
-        SetupScreen::AskProfile
-        | SetupScreen::AskMemory
-        | SetupScreen::AskTools
-        | SetupScreen::AskSkills
-        | SetupScreen::AskMcps => "Current Turn",
-        SetupScreen::Confirm => "Ready To Apply",
-        SetupScreen::Complete => "Completed",
+        SetupScreen::Complete => "Your OpenAgents setup is ready",
     }
 }
 
 fn hero_lines(state: HeroState, title: &str, tick: usize) -> Vec<Line<'static>> {
-    let pulse = match tick % 3 {
-        0 => "·",
-        1 => "•",
-        _ => "●",
+    let stars = match tick % 3 {
+        0 => "✦     ✦",
+        1 => "  ✦ ✦  ",
+        _ => "✦   ✦  ",
     };
-    let visor = match state {
-        HeroState::Scanning => "[]==[]",
-        HeroState::Listening => "[====]",
-        HeroState::Ready => "[^^^^]",
+    let moon = match state {
+        HeroState::Scanning => "◐",
+        HeroState::Listening => "◑",
+        HeroState::Ready => "◉",
+    };
+    let eye_band = match state {
+        HeroState::Scanning => "▀▀",
+        HeroState::Listening => "██",
+        HeroState::Ready => "▌▐",
     };
 
     vec![
         line_accent(format!("OpenAgents // {title}")),
         line_subtle(
-            "................................................................................",
+            "────────────────────────────────────────────────────────────────────────────────",
         ),
-        line_plain(""),
-        line_plain("       .-----------------------------------------------------------------."),
-        line_plain(format!(
-            "       |  {pulse}  OPENAGENTS SETUP                                {pulse}  {pulse}  {pulse}       |"
-        )),
-        line_plain("       |                                                               .-. |"),
-        line_plain(format!(
-            "       |      .----.        {visor}                    .------.      (   )|"
-        )),
-        line_plain("       |     /|_||_|\\       .--.         .--------.     | sync |      `-` ||"),
-        line_plain("       |     ||____||      /_||_\\        | memory |     | ctrl |    .---. ||"),
-        line_plain(
-            "       |_____|/____\\|______\\____/________| layer  |_____| plan |____|___|_||",
+        Line::from(vec![
+            Span::styled(format!("   {stars:<12}"), Style::default().fg(SLATE)),
+            Span::styled("░░░░░░░░░░", Style::default().fg(Color::Rgb(52, 72, 96))),
+            Span::styled("                           ", Style::default().fg(IVORY)),
+            Span::styled(moon.to_string(), Style::default().fg(LIME)),
+        ]),
+        Line::from(vec![
+            Span::styled("      ▄▄▄▄▄▄▄▄▄      ", Style::default().fg(TEAL)),
+            Span::styled(
+                "           ░░░░░░░░          ",
+                Style::default().fg(Color::Rgb(44, 58, 78)),
+            ),
+            Span::styled("✦", Style::default().fg(SLATE)),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "    ▄███████████▄    ",
+                Style::default().fg(Color::Rgb(214, 149, 154)),
+            ),
+            Span::styled(
+                "      ░░░░░░░░░       ",
+                Style::default().fg(Color::Rgb(36, 49, 65)),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("    ██", Style::default().fg(Color::Rgb(214, 149, 154))),
+            Span::styled(
+                format!("{eye_band:^4}"),
+                Style::default().fg(CHARCOAL).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "███████    ",
+                Style::default().fg(Color::Rgb(214, 149, 154)),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  ▄████████████████▄  ",
+                Style::default().fg(Color::Rgb(214, 149, 154)),
+            ),
+            Span::styled(
+                "   sync ctrl memory",
+                Style::default().fg(if state == HeroState::Scanning {
+                    LIME
+                } else {
+                    SLATE
+                }),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  ██████████████████  ",
+                Style::default().fg(Color::Rgb(214, 149, 154)),
+            ),
+            Span::styled("  pixel setup scene", Style::default().fg(SLATE)),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "     ██   ██   ██     ",
+                Style::default().fg(Color::Rgb(214, 149, 154)),
+            ),
+            Span::styled("                         ", Style::default().fg(IVORY)),
+        ]),
+        line_subtle(
+            "────────────────────────────────────────────────────────────────────────────────",
         ),
-        line_subtle("                 One active turn at a time. Earlier turns collapse upward."),
     ]
 }
 
 fn setup_body_lines(app: &SetupApp) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    if app.collapsed_turns() > 0 {
-        lines.push(line_subtle(format!(
-            "{} earlier turn(s) collapsed. Run `openagents-kit history` later to see the full setup transcript.",
-            app.collapsed_turns()
-        )));
-        lines.push(line_plain(""));
-    }
-
-    let active = revealed_lines(active_turn_lines(app), app.motion_tick);
-    lines.extend(active);
-
+    let mut lines = revealed_lines(active_turn_lines(app), app.motion_tick);
     let choices = choice_lines(app);
     if !choices.is_empty() {
         lines.push(line_plain(""));
@@ -677,24 +813,24 @@ pub fn active_turn_lines(app: &SetupApp) -> Vec<Line<'static>> {
                 "I only need to manage the tools that are missing or uncertain right now.",
             ),
             line_assistant(
-                "Toggle any tool you do not want me to manage, then press Enter when this list looks right.",
+                "Use the arrow keys to adjust the list, then press Enter when it looks right.",
             ),
         ],
         SetupScreen::AskSkills => vec![
             line_assistant(
                 "I found missing shared skills, so I’m proposing a small starter layer.",
             ),
-            line_assistant("Toggle anything you do not want, then press Enter to continue."),
+            line_assistant("Use the arrow keys to adjust the list, then press Enter to continue."),
         ],
         SetupScreen::AskMcps => vec![
             line_assistant(
                 "I found missing MCP capabilities, so I’m proposing only the pieces this setup still needs.",
             ),
-            line_assistant("Toggle anything you do not want, then press Enter to continue."),
+            line_assistant("Use the arrow keys to adjust the list, then press Enter to continue."),
         ],
         SetupScreen::Confirm => vec![
             line_assistant(
-                "I’m ready to write the control plane, attach this project, seed memory if needed, and sync the managed outputs.",
+                "I’m ready to write the missing setup pieces, attach this project, seed memory if needed, and sync the managed outputs.",
             ),
             line_assistant(
                 "Press Enter to finish. If you want to revisit the last question, press Backspace.",
@@ -705,7 +841,7 @@ pub fn active_turn_lines(app: &SetupApp) -> Vec<Line<'static>> {
                 "I finished the missing setup work and recorded this session for later review.",
             ),
             line_assistant(
-                "You can reopen the dashboard with `openagents-kit`, or inspect the transcript with `openagents-kit history`.",
+                "You can reopen home with `openagents-kit`, or inspect the transcript with `openagents-kit history`.",
             ),
         ],
     }
@@ -713,16 +849,16 @@ pub fn active_turn_lines(app: &SetupApp) -> Vec<Line<'static>> {
 
 fn detection_lines(app: &SetupApp) -> Vec<Line<'static>> {
     let mut lines = vec![line_assistant(
-        "Welcome. I’m going to keep one OpenAgents control plane aligned across your tools, skills, MCP servers, and memory.",
+        "Welcome. I’m going to keep one OpenAgents setup aligned across your tools, skills, MCP servers, and memory.",
     )];
 
     if app.existing_control_plane {
         lines.push(line_assistant(
-            "I found an existing control plane, so I’m only going to ask about the gaps that still need attention.",
+            "I found your existing setup, so I’m only going to touch the pieces that are still missing or drifting.",
         ));
     } else {
         lines.push(line_assistant(
-            "I do not see a saved OpenAgents control plane yet, so I prepared a starter setup based on what I detected.",
+            "I do not see a saved OpenAgents setup yet, so I prepared a starter setup based on what I detected.",
         ));
     }
 
@@ -749,15 +885,9 @@ fn detection_lines(app: &SetupApp) -> Vec<Line<'static>> {
         ));
     }
 
-    if app.questions == vec![SetupQuestion::Confirm] {
-        lines.push(line_assistant(
-            "Everything important is already configured, so I only need your confirmation before I resync the managed outputs.",
-        ));
-    } else {
-        lines.push(line_assistant(
-            "Press Enter and I’ll walk through only the missing pieces.",
-        ));
-    }
+    lines.push(line_assistant(
+        "Press Enter and I’ll walk through only the missing pieces.",
+    ));
 
     lines
 }
@@ -765,25 +895,18 @@ fn detection_lines(app: &SetupApp) -> Vec<Line<'static>> {
 fn choice_lines(app: &SetupApp) -> Vec<Line<'static>> {
     match app.screen {
         SetupScreen::Boot => vec![line_subtle("Enter skip boot animation  |  q quit")],
-        SetupScreen::Detection => vec![
-            line_choice(1, "Start the guided setup"),
-            line_subtle("Enter also accepts this default."),
-        ],
+        SetupScreen::Detection => vec![line_subtle("Enter start guided setup")],
         SetupScreen::AskProfile => profile_choice_lines(app),
         SetupScreen::AskMemory => memory_choice_lines(app),
         SetupScreen::AskTools => toggle_choice_lines(
-            &app.selection
-                .enabled_tools
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>(),
+            app.tool_cursor,
             tool_order()
                 .iter()
                 .map(|tool| (tool.to_string(), app.selection.enabled_tools.contains(tool)))
                 .collect(),
         ),
         SetupScreen::AskSkills => toggle_choice_lines(
-            &app.selection.selected_skills,
+            app.skill_cursor,
             skill_catalog()
                 .into_iter()
                 .map(|item| {
@@ -798,7 +921,7 @@ fn choice_lines(app: &SetupApp) -> Vec<Line<'static>> {
                 .collect(),
         ),
         SetupScreen::AskMcps => toggle_choice_lines(
-            &app.selection.selected_mcp_servers,
+            app.mcp_cursor,
             mcp_catalog()
                 .into_iter()
                 .map(|item| {
@@ -812,10 +935,9 @@ fn choice_lines(app: &SetupApp) -> Vec<Line<'static>> {
                 })
                 .collect(),
         ),
-        SetupScreen::Confirm => vec![
-            line_choice(1, "Write the control plane and sync the managed outputs"),
-            line_subtle("Enter accepts this plan. Backspace returns to the previous question."),
-        ],
+        SetupScreen::Confirm => vec![line_subtle(
+            "Enter write the missing setup pieces. Backspace returns to the previous question.",
+        )],
         SetupScreen::Complete => vec![line_subtle("Enter exit  |  q quit")],
     }
 }
@@ -841,9 +963,10 @@ fn profile_choice_lines(app: &SetupApp) -> Vec<Line<'static>> {
     .into_iter()
     .enumerate()
     .flat_map(|(index, (preset, label, description))| {
+        let focused = app.profile_cursor == index;
         let selected = app.selection.profile_preset == preset;
         vec![
-            line_choice_state(index + 1, label, selected),
+            line_selectable_option(label, focused, selected),
             line_subtle(description),
         ]
     })
@@ -869,9 +992,10 @@ fn memory_choice_lines(app: &SetupApp) -> Vec<Line<'static>> {
     .into_iter()
     .enumerate()
     .flat_map(|(index, (preset, label, description))| {
+        let focused = app.memory_cursor == index;
         let selected = app.selection.memory_backend == preset;
         vec![
-            line_choice_state(index + 1, label, selected),
+            line_selectable_option(label, focused, selected),
             line_subtle(description),
         ]
     })
@@ -881,22 +1005,15 @@ fn memory_choice_lines(app: &SetupApp) -> Vec<Line<'static>> {
     .collect()
 }
 
-fn toggle_choice_lines(selected_ids: &[String], rows: Vec<(String, bool)>) -> Vec<Line<'static>> {
+fn toggle_choice_lines(cursor: usize, rows: Vec<(String, bool)>) -> Vec<Line<'static>> {
     let mut lines = rows
         .into_iter()
         .enumerate()
-        .map(|(index, (label, selected))| {
-            line_choice_state(
-                index + 1,
-                &format!("[{}] {}", if selected { "x" } else { " " }, label),
-                selected,
-            )
-        })
+        .map(|(index, (label, selected))| line_toggle_option(&label, cursor == index, selected))
         .collect::<Vec<_>>();
-    lines.push(line_subtle(format!(
-        "Enter continues with: {}",
-        join_or_none(selected_ids)
-    )));
+    lines.push(line_subtle(
+        "Use ↑/↓ to move, ←/→ to toggle, and Enter to continue.",
+    ));
     lines
 }
 
@@ -999,21 +1116,21 @@ pub fn screen_status(screen: SetupScreen) -> &'static str {
         SetupScreen::AskSkills => "Choose the shared skills I should install.",
         SetupScreen::AskMcps => "Choose the MCP servers I should install.",
         SetupScreen::Confirm => "I’m ready to write and sync everything.",
-        SetupScreen::Complete => "The control plane is ready.",
+        SetupScreen::Complete => "The setup is ready.",
     }
 }
 
 pub fn setup_controls(screen: SetupScreen) -> &'static str {
     match screen {
         SetupScreen::Boot => "Enter skip boot | q quit",
-        SetupScreen::Detection => "1 start | Enter continue | q quit",
+        SetupScreen::Detection => "Enter continue | q quit",
         SetupScreen::AskProfile | SetupScreen::AskMemory => {
-            "1-3 choose | Enter keep recommendation | Backspace back | q quit"
+            "←/→ choose | Enter continue | Backspace back | q quit"
         }
         SetupScreen::AskTools | SetupScreen::AskSkills | SetupScreen::AskMcps => {
-            "1-3 toggle | Enter continue | Backspace back | q quit"
+            "↑/↓ move | ←/→ toggle | Enter continue | Backspace back | q quit"
         }
-        SetupScreen::Confirm => "1 write | Enter confirm | Backspace back | q quit",
+        SetupScreen::Confirm => "Enter confirm | Backspace back | q quit",
         SetupScreen::Complete => "Enter exit | q quit",
     }
 }
@@ -1096,13 +1213,13 @@ fn revealed_lines(lines: Vec<Line<'static>>, motion_tick: usize) -> Vec<Line<'st
 
 fn setup_history(app: &SetupApp) -> String {
     let mut lines = vec![
-        "OpenAgents> Welcome. I’m going to keep one OpenAgents control plane aligned across your tools, skills, MCP servers, and memory.".to_string(),
+        "OpenAgents> Welcome. I’m going to keep one OpenAgents setup aligned across your tools, skills, MCP servers, and memory.".to_string(),
     ];
 
     if app.existing_control_plane {
-        lines.push("OpenAgents> I found an existing control plane, so I only asked about the gaps that still needed attention.".to_string());
+        lines.push("OpenAgents> I found an existing setup, so I only asked about the gaps that still needed attention.".to_string());
     } else {
-        lines.push("OpenAgents> I did not find a saved OpenAgents control plane yet, so I prepared a starter setup.".to_string());
+        lines.push("OpenAgents> I did not find a saved OpenAgents setup yet, so I prepared a starter setup.".to_string());
     }
 
     if app.report.detections.is_empty() {
@@ -1161,21 +1278,10 @@ fn question_history_lines(question: SetupQuestion, app: &SetupApp) -> Vec<String
             "OpenAgents> Toggle anything you do not want, then press Enter to continue.".to_string(),
         ],
         SetupQuestion::Confirm => vec![format!(
-            "OpenAgents> I’m ready to write the control plane for `{}`.",
+            "OpenAgents> I’m ready to write the setup for `{}`.",
             app.selection.workspace_name
         )],
     }
-}
-
-fn panel(title: &'static str) -> Block<'static> {
-    Block::default()
-        .borders(Borders::ALL)
-        .title(Span::styled(
-            title,
-            Style::default().fg(TEAL).add_modifier(Modifier::BOLD),
-        ))
-        .border_style(Style::default().fg(SLATE))
-        .style(Style::default().bg(CHARCOAL).fg(IVORY))
 }
 
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<std::io::Stdout>>> {
@@ -1214,28 +1320,54 @@ fn line_subtle<T: Into<String>>(text: T) -> Line<'static> {
     Line::from(Span::styled(text.into(), Style::default().fg(SLATE)))
 }
 
-fn line_choice(number: usize, text: &str) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(
-            format!("{number}. "),
-            Style::default().fg(LIME).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(text.to_string(), Style::default().fg(IVORY)),
-    ])
-}
-
-fn line_choice_state(number: usize, text: &str, selected: bool) -> Line<'static> {
-    let style = if selected {
+fn line_cursor_option(text: &str, focused: bool) -> Line<'static> {
+    let prefix = if focused { "› " } else { "  " };
+    let style = if focused {
         Style::default().fg(LIME).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(IVORY)
     };
     Line::from(vec![
         Span::styled(
-            format!("{number}. "),
+            prefix,
             Style::default().fg(TEAL).add_modifier(Modifier::BOLD),
         ),
         Span::styled(text.to_string(), style),
+    ])
+}
+
+fn line_selectable_option(text: &str, focused: bool, selected: bool) -> Line<'static> {
+    let marker = if selected { "●" } else { "○" };
+    let style = if focused {
+        Style::default().fg(LIME).add_modifier(Modifier::BOLD)
+    } else if selected {
+        Style::default().fg(TEAL).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(IVORY)
+    };
+    Line::from(vec![
+        Span::styled(if focused { "› " } else { "  " }, Style::default().fg(TEAL)),
+        Span::styled(format!("{marker} "), Style::default().fg(LIME)),
+        Span::styled(text.to_string(), style),
+    ])
+}
+
+fn line_toggle_option(text: &str, focused: bool, enabled: bool) -> Line<'static> {
+    let label = if enabled {
+        format!("[on] {text}")
+    } else {
+        format!("[off] {text}")
+    };
+    let style = if focused {
+        Style::default().fg(LIME).add_modifier(Modifier::BOLD)
+    } else if enabled {
+        Style::default().fg(TEAL)
+    } else {
+        Style::default().fg(IVORY)
+    };
+    Line::from(vec![
+        Span::styled(if focused { "› " } else { "  " }, Style::default().fg(TEAL)),
+        Span::styled(label, style),
     ])
 }
 
@@ -1257,6 +1389,175 @@ fn join_or_none(items: &[String]) -> String {
     } else {
         items.join(", ")
     }
+}
+
+fn profile_index(preset: ProfilePreset) -> usize {
+    match preset {
+        ProfilePreset::PersonalClient => 0,
+        ProfilePreset::TeamWorkspace => 1,
+        ProfilePreset::ProjectSandbox => 2,
+    }
+}
+
+fn profile_preset_from_cursor(index: usize) -> ProfilePreset {
+    match index {
+        1 => ProfilePreset::TeamWorkspace,
+        2 => ProfilePreset::ProjectSandbox,
+        _ => ProfilePreset::PersonalClient,
+    }
+}
+
+fn memory_index(preset: MemoryBackendPreset) -> usize {
+    match preset {
+        MemoryBackendPreset::Filesystem => 0,
+        MemoryBackendPreset::Cortex => 1,
+    }
+}
+
+fn memory_preset_from_cursor(index: usize) -> MemoryBackendPreset {
+    match index {
+        1 => MemoryBackendPreset::Cortex,
+        _ => MemoryBackendPreset::Filesystem,
+    }
+}
+
+fn wrap_cursor(current: usize, len: usize, forward: bool) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    if forward {
+        (current + 1) % len
+    } else if current == 0 {
+        len - 1
+    } else {
+        current - 1
+    }
+}
+
+fn home_actions() -> [HomeAction; 5] {
+    [
+        HomeAction::Sync,
+        HomeAction::Doctor,
+        HomeAction::History,
+        HomeAction::Setup,
+        HomeAction::Exit,
+    ]
+}
+
+fn home_action_label(action: HomeAction) -> &'static str {
+    match action {
+        HomeAction::Sync => "Sync managed outputs",
+        HomeAction::Doctor => "Inspect current health",
+        HomeAction::History => "Review setup history",
+        HomeAction::Setup => "Re-run guided setup",
+        HomeAction::Exit => "Exit",
+    }
+}
+
+fn home_intro_lines(
+    app: &HomeApp,
+    control: &ControlPlane,
+    cwd: &Path,
+    profile: &openagents_core::ResolvedProfile,
+    report: &DetectionReport,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![line_assistant(
+        app.intro.as_deref().unwrap_or(
+            "Your setup is healthy. I can sync your managed outputs, inspect drift, review setup history, or reopen guided setup.",
+        ),
+    )];
+    lines.push(line_assistant(format!(
+        "You are attached to `{}` on this project, with {} managed tool(s).",
+        profile.name,
+        profile.tools.len()
+    )));
+    lines.push(line_subtle(format!(
+        "project  {}  |  config root  {}",
+        cwd.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("current-folder"),
+        control.root.display()
+    )));
+    lines.push(line_subtle(format!(
+        "tools seen  {}  |  memory  {}",
+        report
+            .detections
+            .iter()
+            .map(|item| item.tool.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        profile.memory.provider
+    )));
+    lines
+}
+
+fn home_action_lines(app: &HomeApp) -> Vec<Line<'static>> {
+    home_actions()
+        .into_iter()
+        .enumerate()
+        .map(|(index, action)| {
+            line_cursor_option(home_action_label(action), app.action_index == index)
+        })
+        .collect()
+}
+
+fn sync_result_lines(summary: &SyncSummary) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        line_accent(format!("profile      {}", summary.profile_name)),
+        line_plain(format!("managed root {}", summary.managed_root.display())),
+        line_plain(format!(
+            "tool files   {}",
+            join_paths_or_none(&summary.tool_paths)
+        )),
+        line_plain(format!(
+            "skill files  {}",
+            join_paths_or_none(&summary.skill_paths)
+        )),
+        line_plain(format!(
+            "mcp files    {}",
+            join_paths_or_none(&summary.mcp_paths)
+        )),
+    ];
+    if let Some(memory_path) = &summary.memory_path {
+        lines.push(line_plain(format!(
+            "memory       {}",
+            memory_path.display()
+        )));
+    }
+    lines
+}
+
+fn doctor_result_lines(
+    _control: &ControlPlane,
+    _cwd: &Path,
+    profile: &openagents_core::ResolvedProfile,
+    report: &DetectionReport,
+) -> Vec<Line<'static>> {
+    vec![
+        line_accent(format!("profile      {}", profile.name)),
+        line_plain(format!("memory       {}", profile.memory.provider)),
+        line_plain(format!("skills       {}", join_or_none(&profile.skills))),
+        line_plain(format!(
+            "mcp          {}",
+            join_or_none(&profile.mcp_servers)
+        )),
+        line_plain(format!(
+            "detected     {}",
+            report
+                .detections
+                .iter()
+                .map(|item| item.tool.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    ]
+}
+
+fn history_result_lines(history: &str) -> Vec<Line<'static>> {
+    history
+        .lines()
+        .map(|line| line_plain(line.to_string()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -1281,7 +1582,7 @@ mod tests {
     fn setup_status_and_controls_cover_new_skill_and_mcp_steps() {
         assert!(screen_status(SetupScreen::AskSkills).contains("shared skills"));
         assert!(screen_status(SetupScreen::AskMcps).contains("MCP"));
-        assert!(setup_controls(SetupScreen::AskSkills).contains("1-3 toggle"));
+        assert!(setup_controls(SetupScreen::AskSkills).contains("toggle"));
     }
 
     #[test]
@@ -1304,10 +1605,11 @@ mod tests {
     }
 
     #[test]
-    fn controls_use_numbered_choices_instead_of_arrow_navigation() {
-        assert!(setup_controls(SetupScreen::AskProfile).contains("1-3 choose"));
-        assert!(setup_controls(SetupScreen::AskTools).contains("1-3 toggle"));
-        assert!(!setup_controls(SetupScreen::AskTools).contains("Space toggle"));
+    fn controls_use_arrow_navigation_instead_of_numbered_choices() {
+        assert!(setup_controls(SetupScreen::AskProfile).contains("←/→"));
+        assert!(setup_controls(SetupScreen::AskTools).contains("↑/↓"));
+        assert!(setup_controls(SetupScreen::AskTools).contains("←/→"));
+        assert!(!setup_controls(SetupScreen::AskTools).contains("1-3"));
     }
 
     #[test]
@@ -1383,5 +1685,18 @@ mod tests {
                 .join("\n")
                 .contains("█")
         );
+    }
+
+    #[test]
+    fn hero_scene_uses_unicode_pixel_art_instead_of_ascii_console_lines() {
+        let hero = hero_lines(HeroState::Listening, "Test", 0)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(hero.contains("▀") || hero.contains("▄") || hero.contains("█"));
+        assert!(!hero.contains("[]  []"));
+        assert!(!hero.contains(".--|"));
     }
 }
