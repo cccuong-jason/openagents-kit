@@ -10,6 +10,11 @@
     "url": "https://github.com/cccuong-jason/openagents-kit/issues"
   },
   "homepage": "https://github.com/cccuong-jason/openagents-kit#readme",
+  "scripts": {
+    "release:check": "node scripts/release-guard.mjs",
+    "release:bump": "node scripts/bump-version.mjs",
+    "prepublishOnly": "node scripts/release-guard.mjs"
+  },
   "bin": {
     "openagents-kit": "scripts/npx-installer.mjs"
   },

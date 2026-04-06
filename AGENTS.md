@@ -20,6 +20,20 @@ Update all user-facing version numbers together:
 - `crates/openagents-tui/Cargo.toml`
 - `Cargo.lock` if the crate version changed there
 
+Prefer the helper so they stay aligned:
+
+```powershell
+node scripts/bump-version.mjs X.Y.Z
+```
+
+Before publishing, always run the guard:
+
+```powershell
+npm run release:check
+```
+
+`npm publish` also runs this guard automatically through `prepublishOnly`, so stale or already-published versions fail fast with a clear message before npm tries to publish them.
+
 ### Local verification
 
 On this Windows machine, prefer the real Rust toolchain binaries instead of the `cargo.exe` shim when verification is needed:
