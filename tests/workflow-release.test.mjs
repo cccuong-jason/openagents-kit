@@ -2,9 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+const testDir = path.dirname(fileURLToPath(import.meta.url));
 const workflowPath = path.join(
-  process.cwd(),
+  testDir,
+  '..',
   '.github',
   'workflows',
   'release.yml',
