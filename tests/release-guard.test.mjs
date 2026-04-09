@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   compareVersions,
   createPublishGuardReport,
+  resolveNpmInvocation,
   replaceVersionInCargoToml,
   replaceVersionInCargoLock,
   replaceVersionInPackageJson,
@@ -82,4 +83,25 @@ test('updates openagents-tui entry in Cargo.lock', () => {
   );
 
   assert.match(updated, /name = "openagents-tui"\nversion = "0\.3\.5"/);
+});
+
+test('prefers node plus npm-cli.js when npm_execpath is available', () => {
+  assert.deepEqual(
+    resolveNpmInvocation('win32', { npm_execpath: 'C:/Users/jason/AppData/Roaming/npm/node_modules/npm/bin/npm-cli.js' }, 'node.exe'),
+    {
+      command: 'node.exe',
+      prefixArgs: ['C:/Users/jason/AppData/Roaming/npm/node_modules/npm/bin/npm-cli.js'],
+    },
+  );
+});
+
+test('falls back to shell npm command when npm_execpath is unavailable', () => {
+  assert.deepEqual(resolveNpmInvocation('linux', {}, 'node'), {
+    command: 'npm',
+    prefixArgs: [],
+  });
+  assert.deepEqual(resolveNpmInvocation('win32', {}, 'node.exe'), {
+    command: 'cmd.exe',
+    prefixArgs: ['/d', '/s', '/c', 'npm'],
+  });
 });
