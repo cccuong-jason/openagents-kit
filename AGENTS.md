@@ -12,27 +12,49 @@ When shipping a new public version of `openagents-kit`, use this exact flow.
   - `generated/`
 - Only stage the intended version-bump or code-change files.
 
-### Version bump
+### Primary release command
 
-Update all user-facing version numbers together:
+Prefer the one-command ship flow:
+
+```powershell
+npm run ship
+```
+
+What it does:
+
+- reads the latest published npm version
+- auto-bumps the next patch version
+- syncs `package.json`, `crates/openagents-tui/Cargo.toml`, and `Cargo.lock`
+- runs release guards and local verification
+- shows one confirmation before network-changing actions
+- commits, tags, pushes, publishes, and verifies the npm version
+
+Useful flags:
+
+```powershell
+npm run ship -- --dry-run
+npm run ship -- --yes
+```
+
+- `--dry-run` prints the next version and planned actions without modifying git or publishing
+- `--yes` skips the confirmation prompt
+
+### Manual version helpers
+
+If you ever need to inspect or repair version alignment manually:
 
 - `package.json`
 - `crates/openagents-tui/Cargo.toml`
-- `Cargo.lock` if the crate version changed there
+- `Cargo.lock`
 
-Prefer the helper so they stay aligned:
+Use:
 
 ```powershell
 node scripts/bump-version.mjs X.Y.Z
-```
-
-Before publishing, always run the guard:
-
-```powershell
 npm run release:check
 ```
 
-`npm publish` also runs this guard automatically through `prepublishOnly`, so stale or already-published versions fail fast with a clear message before npm tries to publish them.
+`npm publish` also runs the guard automatically through `prepublishOnly`, so stale or already-published versions fail fast with a clear message before npm tries to publish them.
 
 ### Local verification
 
@@ -58,15 +80,9 @@ Run:
 
 ### Git + release flow
 
-Commit the version bump:
+`npm run ship` performs the release commit, tag, push, npm publish, and npm version verification automatically.
 
-```powershell
-git add package.json crates/openagents-tui/Cargo.toml Cargo.lock AGENTS.md
-git commit -m "chore: release vX.Y.Z"
-git push origin main
-git tag -a vX.Y.Z -m "vX.Y.Z"
-git push origin vX.Y.Z
-```
+Only fall back to manual git steps if the automated ship flow is unavailable.
 
 ### Release verification
 

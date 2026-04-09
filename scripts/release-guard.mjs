@@ -66,10 +66,12 @@ export function resolvePublishedVersion() {
     return override.trim();
   }
 
+  const npmInvocation = resolveNpmInvocation();
+
   try {
     return execFileSync(
-      'npm',
-      ['view', PACKAGE_NAME, 'version'],
+      npmInvocation.command,
+      [...npmInvocation.prefixArgs, 'view', PACKAGE_NAME, 'version'],
       {
         cwd: ROOT_DIR,
         encoding: 'utf8',
@@ -82,6 +84,31 @@ export function resolvePublishedVersion() {
       `Failed to query the published npm version for ${PACKAGE_NAME}. ${detail}`,
     );
   }
+}
+
+export function resolveNpmInvocation(
+  platform = process.platform,
+  env = process.env,
+  nodeExecPath = process.execPath,
+) {
+  if (env.npm_execpath) {
+    return {
+      command: nodeExecPath,
+      prefixArgs: [env.npm_execpath],
+    };
+  }
+
+  if (platform === 'win32') {
+    return {
+      command: 'cmd.exe',
+      prefixArgs: ['/d', '/s', '/c', 'npm'],
+    };
+  }
+
+  return {
+    command: 'npm',
+    prefixArgs: [],
+  };
 }
 
 export function replaceVersionInPackageJson(contents, nextVersion) {

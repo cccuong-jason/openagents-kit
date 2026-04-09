@@ -11,6 +11,7 @@
   },
   "homepage": "https://github.com/cccuong-jason/openagents-kit#readme",
   "scripts": {
+    "ship": "node scripts/ship-release.mjs",
     "release:check": "node scripts/release-guard.mjs",
     "release:bump": "node scripts/bump-version.mjs",
     "prepublishOnly": "node scripts/release-guard.mjs"
