@@ -27,17 +27,6 @@ impl MemoryBackendPreset {
             Self::Cortex => "cortex",
         }
     }
-
-    pub fn next(self) -> Self {
-        match self {
-            Self::Filesystem => Self::Cortex,
-            Self::Cortex => Self::Filesystem,
-        }
-    }
-
-    pub fn previous(self) -> Self {
-        self.next()
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,22 +52,6 @@ impl ProfilePreset {
             Self::ProjectSandbox => "project-sandbox",
         }
     }
-
-    pub fn next(self) -> Self {
-        match self {
-            Self::PersonalClient => Self::TeamWorkspace,
-            Self::TeamWorkspace => Self::ProjectSandbox,
-            Self::ProjectSandbox => Self::PersonalClient,
-        }
-    }
-
-    pub fn previous(self) -> Self {
-        match self {
-            Self::PersonalClient => Self::ProjectSandbox,
-            Self::TeamWorkspace => Self::PersonalClient,
-            Self::ProjectSandbox => Self::TeamWorkspace,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +63,16 @@ pub struct SetupSelection {
     pub selected_skills: Vec<String>,
     pub selected_mcp_servers: Vec<String>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupQuestion {
+    Profile,
+    Memory,
+    Tools,
+    Skills,
+    Mcps,
+    Confirm,
 }
 
 pub fn recommended_selection(detections: &DetectionReport) -> SetupSelection {
@@ -105,10 +88,7 @@ pub fn recommended_selection(detections: &DetectionReport) -> SetupSelection {
     enabled_tools.dedup();
 
     let mut warnings = if detections.detections.is_empty() {
-        vec![
-            "I did not find a trusted tool footprint, so I prepared a starter control plane."
-                .to_string(),
-        ]
+        vec!["I did not find a trusted tool footprint, so I prepared a starter setup.".to_string()]
     } else {
         vec![
             "I can sync the same desired capabilities across your enabled tools after setup."
@@ -244,7 +224,7 @@ pub fn selection_from_config(config: &OpenAgentsConfig) -> SetupSelection {
         enabled_tools,
         selected_skills: profile.skills.clone(),
         selected_mcp_servers: profile.mcp_servers.clone(),
-        warnings: vec!["I imported your existing OpenAgents control plane.".to_string()],
+        warnings: vec!["I imported your existing OpenAgents setup.".to_string()],
     }
 }
 
@@ -273,14 +253,69 @@ fn merge_unique(target: &mut Vec<String>, source: &[String]) {
     target.dedup();
 }
 
+pub fn setup_questions(
+    detections: &DetectionReport,
+    selection: &SetupSelection,
+    existing_control_plane: bool,
+) -> Vec<SetupQuestion> {
+    let mut questions = Vec::new();
+
+    if !existing_control_plane {
+        questions.push(SetupQuestion::Profile);
+    }
+
+    if !existing_control_plane || !detections.has_memory_layer {
+        questions.push(SetupQuestion::Memory);
+    }
+
+    let detected_tools = detections
+        .detections
+        .iter()
+        .map(|item| item.tool)
+        .collect::<Vec<_>>();
+    let has_missing_selected_tools = selection
+        .enabled_tools
+        .iter()
+        .any(|tool| !detected_tools.contains(tool));
+
+    if selection.enabled_tools.is_empty()
+        || has_missing_selected_tools
+        || (!existing_control_plane && detections.detections.is_empty())
+    {
+        questions.push(SetupQuestion::Tools);
+    }
+
+    let missing_skills = selection
+        .selected_skills
+        .iter()
+        .any(|skill| !detections.installed_skills.contains(skill));
+    if missing_skills {
+        questions.push(SetupQuestion::Skills);
+    }
+
+    let missing_mcps = selection
+        .selected_mcp_servers
+        .iter()
+        .any(|server| !detections.installed_mcp_servers.contains(server));
+    if missing_mcps {
+        questions.push(SetupQuestion::Mcps);
+    }
+
+    if !questions.is_empty() || !existing_control_plane {
+        questions.push(SetupQuestion::Confirm);
+    }
+    questions
+}
+
 #[cfg(test)]
 mod tests {
     use crate::detection::{DetectionReport, ToolDetection};
     use openagents_core::{OpenAgentsConfig, ProfileScope, ToolKind};
 
     use super::{
-        MemoryBackendPreset, ProfilePreset, recommended_selection, refresh_catalog_recommendations,
-        selection_from_config, selection_to_config,
+        MemoryBackendPreset, ProfilePreset, SetupQuestion, recommended_selection,
+        refresh_catalog_recommendations, selection_from_config, selection_to_config,
+        setup_questions,
     };
 
     #[test]
@@ -405,5 +440,81 @@ profiles:
         assert_eq!(selection.profile_preset, ProfilePreset::PersonalClient);
         assert_eq!(selection.memory_backend, MemoryBackendPreset::Filesystem);
         assert_eq!(selection.enabled_tools, vec![ToolKind::Codex]);
+    }
+
+    #[test]
+    fn skips_setup_questions_when_existing_setup_is_already_complete() {
+        let report = DetectionReport {
+            detections: vec![
+                ToolDetection {
+                    tool: ToolKind::Codex,
+                    evidence_path: "C:/Users/example/.codex/config.toml".into(),
+                    summary: "Codex config found".to_string(),
+                },
+                ToolDetection {
+                    tool: ToolKind::Claude,
+                    evidence_path: "C:/Users/example/.claude.json".into(),
+                    summary: "Claude state found".to_string(),
+                },
+            ],
+            warnings: Vec::new(),
+            installed_skills: vec!["shared-memory".to_string()],
+            installed_mcp_servers: vec!["filesystem-memory".to_string()],
+            has_memory_layer: true,
+        };
+        let selection = super::SetupSelection {
+            workspace_name: "openagents-home".to_string(),
+            profile_preset: ProfilePreset::PersonalClient,
+            memory_backend: MemoryBackendPreset::Filesystem,
+            enabled_tools: vec![ToolKind::Claude, ToolKind::Codex],
+            selected_skills: vec!["shared-memory".to_string()],
+            selected_mcp_servers: vec!["filesystem-memory".to_string()],
+            warnings: vec![],
+        };
+
+        let questions = setup_questions(&report, &selection, true);
+
+        assert!(questions.is_empty());
+    }
+
+    #[test]
+    fn first_time_setup_focuses_on_missing_memory_and_catalog_gaps() {
+        let report = DetectionReport {
+            detections: vec![
+                ToolDetection {
+                    tool: ToolKind::Codex,
+                    evidence_path: "C:/Users/example/.codex/config.toml".into(),
+                    summary: "Codex config found".to_string(),
+                },
+                ToolDetection {
+                    tool: ToolKind::Claude,
+                    evidence_path: "C:/Users/example/.claude.json".into(),
+                    summary: "Claude state found".to_string(),
+                },
+                ToolDetection {
+                    tool: ToolKind::Gemini,
+                    evidence_path: "C:/Users/example/.gemini/settings.json".into(),
+                    summary: "Gemini settings found".to_string(),
+                },
+            ],
+            warnings: Vec::new(),
+            installed_skills: vec!["starter-guidance".to_string()],
+            installed_mcp_servers: vec![],
+            has_memory_layer: false,
+        };
+        let selection = recommended_selection(&report);
+
+        let questions = setup_questions(&report, &selection, false);
+
+        assert_eq!(
+            questions,
+            vec![
+                SetupQuestion::Profile,
+                SetupQuestion::Memory,
+                SetupQuestion::Skills,
+                SetupQuestion::Mcps,
+                SetupQuestion::Confirm,
+            ]
+        );
     }
 }

@@ -12,13 +12,49 @@ When shipping a new public version of `openagents-kit`, use this exact flow.
   - `generated/`
 - Only stage the intended version-bump or code-change files.
 
-### Version bump
+### Primary release command
 
-Update all user-facing version numbers together:
+Prefer the one-command ship flow:
+
+```powershell
+npm run ship
+```
+
+What it does:
+
+- reads the latest published npm version
+- auto-bumps the next patch version
+- syncs `package.json`, `crates/openagents-tui/Cargo.toml`, and `Cargo.lock`
+- runs release guards and local verification
+- shows one confirmation before network-changing actions
+- commits, tags, pushes, publishes, and verifies the npm version
+
+Useful flags:
+
+```powershell
+npm run ship -- --dry-run
+npm run ship -- --yes
+```
+
+- `--dry-run` prints the next version and planned actions without modifying git or publishing
+- `--yes` skips the confirmation prompt
+
+### Manual version helpers
+
+If you ever need to inspect or repair version alignment manually:
 
 - `package.json`
 - `crates/openagents-tui/Cargo.toml`
-- `Cargo.lock` if the crate version changed there
+- `Cargo.lock`
+
+Use:
+
+```powershell
+node scripts/bump-version.mjs X.Y.Z
+npm run release:check
+```
+
+`npm publish` also runs the guard automatically through `prepublishOnly`, so stale or already-published versions fail fast with a clear message before npm tries to publish them.
 
 ### Local verification
 
@@ -44,15 +80,9 @@ Run:
 
 ### Git + release flow
 
-Commit the version bump:
+`npm run ship` performs the release commit, tag, push, npm publish, and npm version verification automatically.
 
-```powershell
-git add package.json crates/openagents-tui/Cargo.toml Cargo.lock AGENTS.md
-git commit -m "chore: release vX.Y.Z"
-git push origin main
-git tag -a vX.Y.Z -m "vX.Y.Z"
-git push origin vX.Y.Z
-```
+Only fall back to manual git steps if the automated ship flow is unavailable.
 
 ### Release verification
 
@@ -75,13 +105,21 @@ Preferred public-path verification:
 
 ```powershell
 npx --yes github:cccuong-jason/openagents-kit#vX.Y.Z
-& "$HOME\.local\bin\openagents-kit.exe" --help
+openagents-kit --help
 ```
 
-If the shell still resolves an old binary from `C:\Users\jason\.cargo\bin\openagents-kit.exe`, replace it with the fresh release binary:
+Expected install locations:
+
+- Windows: `%LOCALAPPDATA%\OpenAgents\bin\openagents-kit.exe`
+- macOS/Linux: `~/.local/bin/openagents-kit`
+
+The installer also repairs the user `PATH` and refreshes an older user-owned `openagents-kit` that already wins on `PATH`, so `openagents-kit --help` should resolve to the new version without a manual copy step.
+
+If verification still shows an older binary, inspect resolution before patching anything:
 
 ```powershell
-Copy-Item "$HOME\.local\bin\openagents-kit.exe" "$HOME\.cargo\bin\openagents-kit.exe" -Force
+where.exe openagents-kit
+Get-Command openagents-kit -All | Format-Table -AutoSize CommandType,Name,Source
 ```
 
 ### npm publishing notes

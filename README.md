@@ -30,11 +30,16 @@ Primary install:
 npx openagents-kit
 ```
 
-That installs the native `openagents-kit` binary into your user bin directory, then you can run:
+That installs the native `openagents-kit` binary into an OpenAgents-owned global bin directory, repairs your user `PATH` automatically when needed, and refreshes an older user-owned `openagents-kit` binary if one already wins on `PATH`. After install you can run:
 
 ```bash
 openagents-kit
 ```
+
+Canonical install locations:
+
+- Windows: `%LOCALAPPDATA%\OpenAgents\bin`
+- macOS/Linux: `~/.local/bin`
 
 Release-script fallbacks:
 

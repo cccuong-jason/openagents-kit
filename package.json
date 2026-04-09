@@ -1,6 +1,6 @@
 {
   "name": "openagents-kit",
-  "version": "0.3.2",
+  "version": "0.3.4",
   "description": "Universal installer for the OpenAgents Kit native CLI.",
   "repository": {
     "type": "git",
@@ -10,6 +10,12 @@
     "url": "https://github.com/cccuong-jason/openagents-kit/issues"
   },
   "homepage": "https://github.com/cccuong-jason/openagents-kit#readme",
+  "scripts": {
+    "ship": "node scripts/ship-release.mjs",
+    "release:check": "node scripts/release-guard.mjs",
+    "release:bump": "node scripts/bump-version.mjs",
+    "prepublishOnly": "node scripts/release-guard.mjs"
+  },
   "bin": {
     "openagents-kit": "scripts/npx-installer.mjs"
   },

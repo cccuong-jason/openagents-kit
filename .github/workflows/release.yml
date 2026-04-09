@@ -93,6 +93,9 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    env:
+      HAS_NPM_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -109,13 +112,11 @@ jobs:
         run: npm publish --access public
 
       - name: Publish package with token fallback
-        if: ${{ steps.publish_trusted.outcome == 'failure' && secrets.NPM_TOKEN != '' }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        if: ${{ steps.publish_trusted.outcome == 'failure' && env.HAS_NPM_TOKEN == 'true' }}
         run: npm publish --access public
 
       - name: Fail when npm publishing is still not configured
-        if: ${{ steps.publish_trusted.outcome == 'failure' && secrets.NPM_TOKEN == '' }}
+        if: ${{ steps.publish_trusted.outcome == 'failure' && env.HAS_NPM_TOKEN != 'true' }}
         run: |
           echo "Trusted publishing failed and NPM_TOKEN is not configured."
           echo "Run 'npm trust github openagents-kit --repo cccuong-jason/openagents-kit --file release.yml --yes' after completing npm browser authentication."
