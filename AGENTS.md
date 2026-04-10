@@ -24,6 +24,7 @@ What it does:
 
 - reads the latest published npm version
 - auto-bumps the next patch version
+- if the repo is already exactly one patch ahead of npm, resumes that pending release instead of bumping again
 - syncs `package.json`, `crates/openagents-tui/Cargo.toml`, and `Cargo.lock`
 - runs release guards and local verification
 - shows one confirmation before network-changing actions

@@ -42,6 +42,38 @@ export function computeNextPatchVersion(version) {
   return `${major}.${minor}.${Number.parseInt(patch, 10) + 1}`;
 }
 
+export function resolveReleaseVersionState(packageVersion, cargoVersion, publishedVersion) {
+  if (packageVersion !== cargoVersion) {
+    throw new Error(
+      `Version mismatch before shipping: package.json is ${packageVersion} but crates/openagents-tui/Cargo.toml is ${cargoVersion}.`,
+    );
+  }
+
+  if (compareVersions(packageVersion, publishedVersion) === 0) {
+    return {
+      packageVersion,
+      cargoVersion,
+      publishedVersion,
+      targetVersion: computeNextPatchVersion(publishedVersion),
+      mode: 'bump',
+    };
+  }
+
+  if (compareVersions(packageVersion, computeNextPatchVersion(publishedVersion)) === 0) {
+    return {
+      packageVersion,
+      cargoVersion,
+      publishedVersion,
+      targetVersion: packageVersion,
+      mode: 'resume',
+    };
+  }
+
+  throw new Error(
+    `Expected local version ${packageVersion} to match the published npm version ${publishedVersion} or be exactly one patch ahead so ship can resume a pending release.`,
+  );
+}
+
 export function parseShipArgs(argv) {
   const flags = { yes: false, dryRun: false };
 
@@ -217,17 +249,7 @@ function resolveCargoExecution() {
 }
 
 function ensureVersionsAreAlignedWithPublished(packageVersion, cargoVersion, publishedVersion) {
-  if (packageVersion !== cargoVersion) {
-    throw new Error(
-      `Version mismatch before shipping: package.json is ${packageVersion} but crates/openagents-tui/Cargo.toml is ${cargoVersion}.`,
-    );
-  }
-
-  if (compareVersions(packageVersion, publishedVersion) !== 0) {
-    throw new Error(
-      `Expected local version ${packageVersion} to match the published npm version ${publishedVersion} before auto-bumping. Update your checkout or fix the local version files first.`,
-    );
-  }
+  return resolveReleaseVersionState(packageVersion, cargoVersion, publishedVersion);
 }
 
 function applyVersionBump(nextVersion) {
@@ -305,10 +327,8 @@ export async function main(argv = process.argv.slice(2)) {
   const packageVersion = readPackageVersion(readFile(PACKAGE_JSON_PATH));
   const cargoVersion = readCargoVersion(readFile(CARGO_TOML_PATH));
   const publishedVersion = resolvePublishedVersion();
-
-  ensureVersionsAreAlignedWithPublished(packageVersion, cargoVersion, publishedVersion);
-
-  const nextVersion = computeNextPatchVersion(publishedVersion);
+  const versionState = ensureVersionsAreAlignedWithPublished(packageVersion, cargoVersion, publishedVersion);
+  const nextVersion = versionState.targetVersion;
   const branch = getCurrentBranch();
   const dirtyPaths = getStatusLines();
   const plan = createShipPlan({
@@ -326,6 +346,10 @@ export async function main(argv = process.argv.slice(2)) {
 
   console.log(plan.message);
 
+  if (versionState.mode === 'resume') {
+    console.log(`Resuming pending release ${nextVersion} because npm is still on ${publishedVersion}.`);
+  }
+
   if (dryRun) {
     return;
   }
@@ -337,7 +361,9 @@ export async function main(argv = process.argv.slice(2)) {
     }
   }
 
-  applyVersionBump(nextVersion);
+  if (versionState.mode === 'bump') {
+    applyVersionBump(nextVersion);
+  }
   verifyReleaseGuard(nextVersion, publishedVersion);
   runVerificationSuite();
   runGitAndPublish(nextVersion);

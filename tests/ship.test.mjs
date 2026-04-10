@@ -6,12 +6,40 @@ import {
   createShipPlan,
   filterUnexpectedDirtyPaths,
   parseShipArgs,
+  resolveReleaseVersionState,
   resolveChildCommand,
 } from '../scripts/ship-release.mjs';
 
 test('computes the next patch version from the published npm version', () => {
   assert.equal(computeNextPatchVersion('0.3.4'), '0.3.5');
   assert.equal(computeNextPatchVersion('1.9.9'), '1.9.10');
+});
+
+test('resumes a pending release when local version is exactly one patch ahead of npm', () => {
+  assert.deepEqual(resolveReleaseVersionState('0.3.5', '0.3.5', '0.3.4'), {
+    packageVersion: '0.3.5',
+    cargoVersion: '0.3.5',
+    publishedVersion: '0.3.4',
+    targetVersion: '0.3.5',
+    mode: 'resume',
+  });
+});
+
+test('auto-bumps when local version still matches npm', () => {
+  assert.deepEqual(resolveReleaseVersionState('0.3.4', '0.3.4', '0.3.4'), {
+    packageVersion: '0.3.4',
+    cargoVersion: '0.3.4',
+    publishedVersion: '0.3.4',
+    targetVersion: '0.3.5',
+    mode: 'bump',
+  });
+});
+
+test('rejects ambiguous multi-version drift ahead of npm', () => {
+  assert.throws(
+    () => resolveReleaseVersionState('0.3.7', '0.3.7', '0.3.4'),
+    /Expected local version 0\.3\.7 to match the published npm version 0\.3\.4 or be exactly one patch ahead/,
+  );
 });
 
 test('filters allowed local artifacts out of the dirty path list', () => {
