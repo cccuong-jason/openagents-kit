@@ -1,0 +1,157 @@
+{
+  "items": [
+    {
+      "id": "shared-memory",
+      "kind": "skill",
+      "name": "Shared Memory",
+      "description": "Starter guidance for keeping cross-tool context consistent.",
+      "supported_tools": ["codex", "claude", "gemini"],
+      "trust": "vetted",
+      "source": "openagents",
+      "install": {
+        "managed_files": [
+          {
+            "relative_path": "skills/shared-memory.md",
+            "body": "# Shared Memory\n\nKeep working notes, decisions, and handoffs in one place so Codex, Claude, and Gemini stay aligned.\n"
+          }
+        ]
+      }
+    },
+    {
+      "id": "starter-guidance",
+      "kind": "skill",
+      "name": "Starter Guidance",
+      "description": "Plain-language prompts for onboarding non-technical clients.",
+      "supported_tools": ["codex", "claude", "gemini"],
+      "trust": "vetted",
+      "source": "openagents",
+      "install": {
+        "managed_files": [
+          {
+            "relative_path": "skills/starter-guidance.md",
+            "body": "# Starter Guidance\n\nExplain what OpenAgents is doing, why it matters, and what the user should do next.\n"
+          }
+        ]
+      }
+    },
+    {
+      "id": "team-handoff",
+      "kind": "skill",
+      "name": "Team Handoff",
+      "description": "Checklist for longer-lived workspaces shared across people and devices.",
+      "supported_tools": ["codex", "claude", "gemini"],
+      "trust": "vetted",
+      "source": "openagents",
+      "install": {
+        "managed_files": [
+          {
+            "relative_path": "skills/team-handoff.md",
+            "body": "# Team Handoff\n\nCapture owner, next actions, and sync status before switching tools or devices.\n"
+          }
+        ]
+      }
+    },
+    {
+      "id": "filesystem-memory",
+      "kind": "mcp",
+      "name": "Filesystem Memory",
+      "description": "Expose the OpenAgents memory directory through a filesystem MCP server.",
+      "supported_tools": ["codex", "claude", "gemini"],
+      "trust": "vetted",
+      "source": "openagents",
+      "install": {
+        "managed_files": [
+          {
+            "relative_path": "mcp/filesystem-memory.yaml",
+            "body": "name: filesystem-memory\ntrust: vetted\nsource: openagents\nmemory_root: ${memory_root}\n"
+          }
+        ],
+        "mcp": {
+          "codex": {
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "${memory_root}"]
+          },
+          "claude": {
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "${memory_root}"]
+          },
+          "gemini": {
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "${memory_root}"]
+          }
+        }
+      }
+    },
+    {
+      "id": "repo-index",
+      "kind": "mcp",
+      "name": "Repo Index",
+      "description": "Expose the attached project through a filesystem MCP server for repo-aware navigation.",
+      "supported_tools": ["codex", "claude", "gemini"],
+      "trust": "community",
+      "source": "openagents-community",
+      "install": {
+        "managed_files": [
+          {
+            "relative_path": "mcp/repo-index.yaml",
+            "body": "name: repo-index\ntrust: community\nsource: openagents-community\nattached_project_root: ${attached_project_root}\n"
+          }
+        ],
+        "mcp": {
+          "codex": {
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "${attached_project_root}"]
+          },
+          "claude": {
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "${attached_project_root}"]
+          },
+          "gemini": {
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "${attached_project_root}"]
+          }
+        }
+      }
+    },
+    {
+      "id": "context7",
+      "kind": "mcp",
+      "name": "Context7",
+      "description": "Community docs retriever for coding assistants.",
+      "supported_tools": ["codex", "claude", "gemini"],
+      "trust": "community",
+      "source": "upstash/context7",
+      "install": {
+        "managed_files": [
+          {
+            "relative_path": "mcp/context7.yaml",
+            "body": "name: context7\ntrust: community\nsource: upstash/context7\n"
+          }
+        ],
+        "mcp": {
+          "codex": {
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@buggyhunter/context7-mcp"]
+          },
+          "claude": {
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@buggyhunter/context7-mcp"]
+          },
+          "gemini": {
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@buggyhunter/context7-mcp"]
+          }
+        }
+      }
+    }
+  ]
+}

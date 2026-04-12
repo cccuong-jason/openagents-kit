@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 openagents-core = { path = "../openagents-core" }
+serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

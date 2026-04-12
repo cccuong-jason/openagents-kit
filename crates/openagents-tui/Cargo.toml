@@ -14,9 +14,11 @@ openagents-adapters = { path = "../openagents-adapters" }
 openagents-core = { path = "../openagents-core" }
 ratatui.workspace = true
 crossterm.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 toml.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

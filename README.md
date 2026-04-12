@@ -7,8 +7,8 @@ It gives you one source of truth for:
 - Global profiles for personal and team contexts
 - Memory providers and shared context backends
 - Tool adapters for `Codex`, `Claude`, and `Gemini`
-- Curated skill and MCP inventories
-- Managed sync outputs and project attachments
+- Vetted and community-backed skill and MCP catalogs with cached refresh
+- Managed sync into real tool configs plus project attachments
 
 ## What This Repo Is For
 
@@ -72,6 +72,9 @@ openagents-kit sync
 openagents-kit doctor
 openagents-kit memory --ensure
 openagents-kit catalog
+openagents-kit catalog --refresh
+openagents-kit catalog --kind mcp
+openagents-kit catalog --install context7
 openagents-kit attach --profile personal-client
 openagents-kit setup --dry-run
 ```
@@ -83,7 +86,14 @@ openagents-kit setup --dry-run
 - Builds a recommended global control plane from what it finds
 - Drives setup as a conversational interview, one decision at a time
 - Attaches the current project to a global profile instead of generating repo-owned config by default
-- Syncs managed tool outputs, skill assets, MCP assets, and local filesystem memory from the same source of truth
+- Syncs managed tool config blocks, skill assets, MCP assets, and local filesystem memory from the same source of truth
+
+## Catalog And Sync
+
+- `openagents-kit catalog --refresh` refreshes the cached online catalog feed and merges it with built-in and custom items
+- `openagents-kit catalog --install <id>` adds a selected skill or MCP to the active profile, then installs and syncs it automatically
+- `openagents-kit sync` reconciles the OpenAgents control plane into managed sections of Codex, Claude, and Gemini config without taking over the whole file
+- `openagents-kit doctor` reports missing capabilities plus per-tool drift so OpenAgents can repair the exact gaps that still exist
 
 ## Config Layout
 
