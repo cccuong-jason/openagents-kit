@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-use openagents_core::ToolKind;
+use openagents_core::{CatalogItemKind, CatalogItemRecord, ToolKind};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -13,7 +13,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
-use crate::catalog::{CatalogItem, curated_items};
+use crate::catalog::curated_items;
 use crate::control::ControlPlane;
 use crate::detection::DetectionReport;
 use crate::runtime::{self, SyncSummary};
@@ -240,13 +240,13 @@ impl SetupApp {
 
     fn toggle_current_skill(&mut self) {
         if let Some(item) = skill_catalog().get(self.skill_cursor) {
-            toggle_string(&mut self.selection.selected_skills, item.id);
+            toggle_string(&mut self.selection.selected_skills, &item.id);
         }
     }
 
     fn toggle_current_mcp(&mut self) {
         if let Some(item) = mcp_catalog().get(self.mcp_cursor) {
-            toggle_string(&mut self.selection.selected_mcp_servers, item.id);
+            toggle_string(&mut self.selection.selected_mcp_servers, &item.id);
         }
     }
 
@@ -273,12 +273,12 @@ impl SetupApp {
             }
             SetupScreen::AskSkills => {
                 if let Some(item) = skill_catalog().get(digit.saturating_sub(1)) {
-                    toggle_string(&mut self.selection.selected_skills, item.id);
+                    toggle_string(&mut self.selection.selected_skills, &item.id);
                 }
             }
             SetupScreen::AskMcps => {
                 if let Some(item) = mcp_catalog().get(digit.saturating_sub(1)) {
-                    toggle_string(&mut self.selection.selected_mcp_servers, item.id);
+                    toggle_string(&mut self.selection.selected_mcp_servers, &item.id);
                 }
             }
             SetupScreen::Detection => {
@@ -534,7 +534,7 @@ fn run_home(
                 KeyCode::Down => app.move_action(true),
                 KeyCode::Enter => match app.current_action() {
                     HomeAction::Sync => {
-                        match runtime::sync_control_plane(control, &resolved.name, false) {
+                        match runtime::sync_control_plane(control, &resolved.name, cwd, false) {
                             Ok(summary) => app.show_result(
                                 HomeHeroState::Working,
                                 "I resynced the managed outputs from your saved OpenAgents setup."
@@ -915,7 +915,7 @@ fn choice_lines(app: &SetupApp) -> Vec<Line<'static>> {
                         app.selection
                             .selected_skills
                             .iter()
-                            .any(|value| value == item.id),
+                            .any(|value| value == &item.id),
                     )
                 })
                 .collect(),
@@ -930,7 +930,7 @@ fn choice_lines(app: &SetupApp) -> Vec<Line<'static>> {
                         app.selection
                             .selected_mcp_servers
                             .iter()
-                            .any(|value| value == item.id),
+                            .any(|value| value == &item.id),
                     )
                 })
                 .collect(),
@@ -1170,17 +1170,19 @@ fn tool_order() -> [ToolKind; 3] {
     [ToolKind::Codex, ToolKind::Claude, ToolKind::Gemini]
 }
 
-fn skill_catalog() -> Vec<&'static CatalogItem> {
+fn skill_catalog() -> Vec<CatalogItemRecord> {
     curated_items()
         .iter()
-        .filter(|item| item.kind == openagents_core::CatalogItemKind::Skill)
+        .filter(|item| item.kind == CatalogItemKind::Skill)
+        .cloned()
         .collect()
 }
 
-fn mcp_catalog() -> Vec<&'static CatalogItem> {
+fn mcp_catalog() -> Vec<CatalogItemRecord> {
     curated_items()
         .iter()
-        .filter(|item| item.kind == openagents_core::CatalogItemKind::Mcp)
+        .filter(|item| item.kind == CatalogItemKind::Mcp)
+        .cloned()
         .collect()
 }
 

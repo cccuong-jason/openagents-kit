@@ -3,12 +3,15 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use openagents_adapters::{render_adapter_output, write_adapter_output};
+use openagents_adapters::{
+    ToolSyncContext, reconcile_tool_configs, render_adapter_output, write_adapter_output,
+};
 use openagents_core::{
-    CatalogItemKind, DeviceOverlay, OpenAgentsConfig, ResolvedProfile, WorkspaceManifest,
+    CatalogItemKind, CatalogTrustLevel, DeviceOverlay, OpenAgentsConfig, ResolvedProfile,
+    WorkspaceManifest,
 };
 
-use crate::catalog::{curated_items, install_catalog_assets};
+use crate::catalog::{CatalogInstallContext, install_catalog_assets, load_catalog_registry};
 use crate::control::{ControlPlane, default_config_root, device_name};
 use crate::detection::{DetectionReport, detect_tools_in_home};
 use crate::setup::{
@@ -60,6 +63,12 @@ pub enum Commands {
     Catalog {
         #[arg(long)]
         kind: Option<CatalogKindArg>,
+        #[arg(long)]
+        refresh: bool,
+        #[arg(long)]
+        install: Option<String>,
+        #[arg(long)]
+        profile: Option<String>,
     },
     Attach {
         #[arg(long)]
@@ -95,9 +104,11 @@ pub struct SyncSummary {
     pub profile_name: String,
     pub managed_root: PathBuf,
     pub tool_paths: Vec<PathBuf>,
+    pub tool_skill_paths: Vec<PathBuf>,
     pub skill_paths: Vec<PathBuf>,
     pub mcp_paths: Vec<PathBuf>,
     pub memory_path: Option<PathBuf>,
+    pub catalog_warnings: Vec<String>,
 }
 
 pub fn dispatch(cli: Cli) -> Result<()> {
@@ -135,10 +146,19 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             format,
             ensure,
         ),
-        Some(Commands::Catalog { kind }) => catalog_command(
+        Some(Commands::Catalog {
+            kind,
+            refresh,
+            install,
+            profile,
+        }) => catalog_command(
             cli.config.as_deref(),
             cli.manifest.as_deref(),
+            &cwd,
             kind.map(Into::into),
+            refresh,
+            install.as_deref(),
+            profile.as_deref(),
         ),
         Some(Commands::Attach { profile }) => attach_command(
             cli.config.as_deref(),
@@ -205,6 +225,15 @@ pub fn apply_setup(
     cwd: &Path,
     selection: &SetupSelection,
 ) -> Result<SyncSummary> {
+    apply_setup_with_tool_home(config_override, cwd, selection, &home_dir()?)
+}
+
+fn apply_setup_with_tool_home(
+    config_override: Option<&Path>,
+    cwd: &Path,
+    selection: &SetupSelection,
+    tool_home: &Path,
+) -> Result<SyncSummary> {
     let config_path = resolve_config_path(config_override)?;
     let root = config_path
         .parent()
@@ -230,7 +259,13 @@ pub fn apply_setup(
     };
     control.attach_current_path(cwd, selection.profile_preset.profile_name());
     control.save()?;
-    sync_control_plane(&control, selection.profile_preset.profile_name(), false)
+    sync_control_plane_with_tool_home(
+        &control,
+        selection.profile_preset.profile_name(),
+        cwd,
+        tool_home,
+        false,
+    )
 }
 
 pub fn write_setup_history(config_override: Option<&Path>, transcript: &str) -> Result<PathBuf> {
@@ -263,11 +298,31 @@ pub fn read_setup_history(config_override: Option<&Path>) -> Result<String> {
 pub fn sync_control_plane(
     control: &ControlPlane,
     profile_name: &str,
+    cwd: &Path,
+    dry_run: bool,
+) -> Result<SyncSummary> {
+    sync_control_plane_with_tool_home(control, profile_name, cwd, &home_dir()?, dry_run)
+}
+
+fn sync_control_plane_with_tool_home(
+    control: &ControlPlane,
+    profile_name: &str,
+    cwd: &Path,
+    tool_home: &Path,
     dry_run: bool,
 ) -> Result<SyncSummary> {
     let resolved = control.resolved_profile(profile_name)?;
     let managed_root = control.managed_root();
     let tool_root = managed_root.join("tools");
+    let catalog =
+        load_catalog_registry(&control.root, &control.config.custom_catalog, false, None)?;
+    let install_context = CatalogInstallContext {
+        workspace_name: control.config.workspace_name.clone(),
+        config_root: control.root.clone(),
+        managed_root: managed_root.clone(),
+        memory_root: control.memory_root(),
+        attached_project_root: cwd.to_path_buf(),
+    };
 
     let mut tool_paths = Vec::new();
     for (tool, config) in &resolved.tools {
@@ -284,10 +339,22 @@ pub fn sync_control_plane(
     }
 
     let catalog_summary = install_catalog_assets(
-        &managed_root,
+        &catalog,
+        &install_context,
         &resolved.skills,
         &resolved.mcp_servers,
-        &control.config.custom_catalog,
+        dry_run,
+    )?;
+    let tool_sync_summaries = reconcile_tool_configs(
+        tool_home,
+        &ToolSyncContext {
+            workspace_name: control.config.workspace_name.clone(),
+            profile_name: profile_name.to_string(),
+            memory_provider: resolved.memory.provider.clone(),
+            memory_endpoint: resolved.memory.endpoint.clone(),
+        },
+        &resolved,
+        &catalog.items,
         dry_run,
     )?;
     let memory_path = ensure_memory_store(control, &resolved, !dry_run)?;
@@ -303,10 +370,19 @@ pub fn sync_control_plane(
     Ok(SyncSummary {
         profile_name: profile_name.to_string(),
         managed_root,
-        tool_paths,
+        tool_paths: tool_sync_summaries
+            .iter()
+            .map(|summary| summary.config_path.clone())
+            .chain(tool_paths)
+            .collect(),
+        tool_skill_paths: tool_sync_summaries
+            .iter()
+            .flat_map(|summary| summary.skill_paths.clone())
+            .collect(),
         skill_paths: catalog_summary.skill_paths,
         mcp_paths: catalog_summary.mcp_paths,
         memory_path,
+        catalog_warnings: catalog.warnings,
     })
 }
 
@@ -361,16 +437,23 @@ fn sync_command(
 ) -> Result<()> {
     let control = ControlPlane::load(config_override, manifest_override)?;
     let profile_name = control.active_profile_name(cwd, explicit_profile);
-    let summary = sync_control_plane(&control, &profile_name, dry_run)?;
+    let summary = sync_control_plane(&control, &profile_name, cwd, dry_run)?;
 
     println!("workspace: {}", control.config.workspace_name);
     println!("profile: {}", summary.profile_name);
     println!("managed root: {}", summary.managed_root.display());
     println!("tool outputs: {}", join_display_paths(&summary.tool_paths));
+    println!(
+        "tool skill assets: {}",
+        join_display_paths(&summary.tool_skill_paths)
+    );
     println!("skills: {}", join_display_paths(&summary.skill_paths));
     println!("mcp servers: {}", join_display_paths(&summary.mcp_paths));
     if let Some(memory_path) = &summary.memory_path {
         println!("memory store: {}", memory_path.display());
+    }
+    if !summary.catalog_warnings.is_empty() {
+        println!("catalog warnings: {}", summary.catalog_warnings.join(" | "));
     }
     Ok(())
 }
@@ -385,6 +468,20 @@ fn doctor_command(
     let profile_name = control.active_profile_name(cwd, explicit_profile);
     let resolved = control.resolved_profile(&profile_name)?;
     let report = load_detection_report()?;
+    let catalog =
+        load_catalog_registry(&control.root, &control.config.custom_catalog, false, None)?;
+    let tool_sync = reconcile_tool_configs(
+        &home_dir()?,
+        &ToolSyncContext {
+            workspace_name: control.config.workspace_name.clone(),
+            profile_name: profile_name.clone(),
+            memory_provider: resolved.memory.provider.clone(),
+            memory_endpoint: resolved.memory.endpoint.clone(),
+        },
+        &resolved,
+        &catalog.items,
+        true,
+    )?;
 
     let missing_tools = resolved
         .tools
@@ -462,6 +559,22 @@ fn doctor_command(
         "memory layer detected on this device: {}",
         if report.has_memory_layer { "yes" } else { "no" }
     );
+    println!(
+        "tool config drift: {}",
+        tool_sync
+            .iter()
+            .map(|summary| format!(
+                "{}={}",
+                summary.tool,
+                if summary.drift_detected {
+                    "drift"
+                } else {
+                    "healthy"
+                }
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     Ok(())
 }
@@ -513,18 +626,65 @@ fn memory_command(
 fn catalog_command(
     config_override: Option<&Path>,
     manifest_override: Option<&Path>,
+    cwd: &Path,
     kind: Option<CatalogItemKind>,
+    refresh: bool,
+    install: Option<&str>,
+    profile: Option<&str>,
 ) -> Result<()> {
-    let custom_catalog = ControlPlane::load(config_override, manifest_override)
-        .map(|plane| plane.config.custom_catalog)
-        .unwrap_or_default();
+    let mut control = ControlPlane::load(config_override, manifest_override)?;
+    let registry =
+        load_catalog_registry(&control.root, &control.config.custom_catalog, refresh, None)?;
 
-    for item in curated_items()
-        .iter()
+    if let Some(id) = install {
+        let item = registry
+            .items
+            .get(id)
+            .with_context(|| format!("catalog item `{id}` was not found"))?;
+        let target_profile = control.active_profile_name(cwd, profile);
+        let profile_entry = control
+            .config
+            .profiles
+            .get_mut(&target_profile)
+            .with_context(|| format!("profile `{target_profile}` was not found"))?;
+
+        match item.kind {
+            CatalogItemKind::Skill => {
+                if !profile_entry.skills.contains(&id.to_string()) {
+                    profile_entry.skills.push(id.to_string());
+                }
+            }
+            CatalogItemKind::Mcp => {
+                if !profile_entry.mcp_servers.contains(&id.to_string()) {
+                    profile_entry.mcp_servers.push(id.to_string());
+                }
+            }
+        }
+
+        control.save()?;
+        let summary = sync_control_plane(&control, &target_profile, cwd, false)?;
+        println!(
+            "installed {} `{}` into profile `{}` and synced: {}",
+            label_for_kind(item.kind),
+            id,
+            target_profile,
+            join_display_paths(&summary.tool_paths)
+        );
+        return Ok(());
+    }
+
+    for item in registry
+        .items
+        .values()
         .filter(|item| kind.is_none() || Some(item.kind) == kind)
     {
         println!(
-            "[curated] {} | {} | {} | tools: {}",
+            "[{}] {} | {} | {} | tools: {} | source: {}",
+            match item.trust {
+                CatalogTrustLevel::Vetted => "vetted",
+                CatalogTrustLevel::Community => "community",
+                CatalogTrustLevel::Custom => "custom",
+            },
             label_for_kind(item.kind),
             item.id,
             item.description,
@@ -532,25 +692,13 @@ fn catalog_command(
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(", "),
+            item.source
         );
     }
 
-    for (id, item) in custom_catalog
-        .iter()
-        .filter(|(_, item)| kind.is_none() || Some(item.kind) == kind)
-    {
-        println!(
-            "[custom] {} | {} | {} | tools: {}",
-            label_for_kind(item.kind),
-            id,
-            item.description,
-            item.supported_tools
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+    if !registry.warnings.is_empty() {
+        println!("catalog warnings: {}", registry.warnings.join(" | "));
     }
 
     Ok(())
@@ -609,7 +757,10 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{apply_setup, read_setup_history, sync_control_plane, write_setup_history};
+    use super::{
+        apply_setup_with_tool_home, read_setup_history, sync_control_plane_with_tool_home,
+        write_setup_history,
+    };
     use crate::control::{ControlPlane, device_name};
     use crate::setup::{MemoryBackendPreset, ProfilePreset, SetupSelection, selection_to_config};
     use openagents_core::{AttachmentRegistry, DeviceOverlay, OpenAgentsConfig, WorkspaceManifest};
@@ -618,7 +769,9 @@ mod tests {
     fn apply_setup_writes_global_config_and_managed_outputs() {
         let temp = tempdir().expect("temp dir should exist");
         let repo = temp.path().join("repo");
+        let tool_home = temp.path().join("tool-home");
         fs::create_dir_all(&repo).expect("repo dir should exist");
+        fs::create_dir_all(&tool_home).expect("tool home should exist");
         let config_root = temp.path().join("openagents-config");
         let selection = SetupSelection {
             workspace_name: "openagents-home".to_string(),
@@ -630,12 +783,12 @@ mod tests {
             warnings: vec![],
         };
 
-        let summary =
-            apply_setup(Some(&config_root), &repo, &selection).expect("setup should apply");
+        let summary = apply_setup_with_tool_home(Some(&config_root), &repo, &selection, &tool_home)
+            .expect("setup should apply");
 
         assert!(config_root.join("config.yaml").exists());
         assert!(config_root.join("attachments.yaml").exists());
-        assert_eq!(summary.tool_paths.len(), 1);
+        assert!(summary.tool_paths.iter().any(|path| path.exists()));
         assert!(summary.skill_paths[0].exists());
         assert!(summary.mcp_paths[0].exists());
         assert!(summary.memory_path.expect("memory path").exists());
@@ -645,7 +798,9 @@ mod tests {
     fn sync_writes_export_and_memory_store() {
         let temp = tempdir().expect("temp dir should exist");
         let root = temp.path().join("config");
+        let tool_home = temp.path().join("tool-home");
         fs::create_dir_all(&root).expect("config root should exist");
+        fs::create_dir_all(&tool_home).expect("tool home should exist");
 
         let selection = SetupSelection {
             workspace_name: "openagents-home".to_string(),
@@ -668,15 +823,21 @@ mod tests {
         };
         control.save().expect("control plane should save");
 
-        let summary =
-            sync_control_plane(&control, "personal-client", false).expect("sync should succeed");
+        let summary = sync_control_plane_with_tool_home(
+            &control,
+            "personal-client",
+            temp.path(),
+            &tool_home,
+            false,
+        )
+        .expect("sync should succeed");
 
         assert!(
             root.join("managed")
                 .join("control-plane-export.yaml")
                 .exists()
         );
-        assert!(summary.tool_paths[0].exists());
+        assert!(summary.tool_paths.iter().any(|path| path.exists()));
         assert!(summary.memory_path.expect("memory path").exists());
     }
 

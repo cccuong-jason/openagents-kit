@@ -1,6 +1,9 @@
+mod sync;
+
 use std::path::Path;
 
 use openagents_core::{ResolvedProfile, ToolKind};
+pub use sync::{ToolSyncContext, ToolSyncSummary, reconcile_tool_configs};
 
 pub fn render_adapter_output(
     tool: ToolKind,
@@ -65,6 +68,8 @@ pub fn write_adapter_output(
 pub enum AdapterError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 #[cfg(test)]

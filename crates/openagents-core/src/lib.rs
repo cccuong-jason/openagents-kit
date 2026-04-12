@@ -168,10 +168,14 @@ pub struct ProjectAttachment {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CustomCatalogItem {
     pub kind: CatalogItemKind,
+    #[serde(default)]
+    pub name: Option<String>,
     pub description: String,
     #[serde(default)]
     pub supported_tools: Vec<ToolKind>,
     pub install_summary: String,
+    #[serde(default)]
+    pub install: Option<CatalogInstallRecipe>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
@@ -179,6 +183,77 @@ pub struct CustomCatalogItem {
 pub enum CatalogItemKind {
     Skill,
     Mcp,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CatalogTrustLevel {
+    #[default]
+    Vetted,
+    Community,
+    Custom,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+pub struct CatalogItemRecord {
+    pub id: String,
+    pub kind: CatalogItemKind,
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub supported_tools: Vec<ToolKind>,
+    #[serde(default)]
+    pub trust: CatalogTrustLevel,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub install: CatalogInstallRecipe,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct CatalogInstallRecipe {
+    #[serde(default)]
+    pub managed_files: Vec<CatalogManagedFile>,
+    #[serde(default)]
+    pub mcp: Option<CatalogMcpRecipe>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+pub struct CatalogManagedFile {
+    pub relative_path: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct CatalogMcpRecipe {
+    #[serde(default)]
+    pub codex: Option<CatalogMcpEndpoint>,
+    #[serde(default)]
+    pub claude: Option<CatalogMcpEndpoint>,
+    #[serde(default)]
+    pub gemini: Option<CatalogMcpEndpoint>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+pub struct CatalogMcpEndpoint {
+    pub transport: CatalogMcpTransport,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CatalogMcpTransport {
+    Stdio,
+    Http,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
