@@ -7,6 +7,7 @@ import {
   createShipPlan,
   filterUnexpectedDirtyPaths,
   parseShipArgs,
+  shouldCreateReleaseCommit,
   resolveReleaseVersionState,
   resolveChildCommand,
 } from '../scripts/ship-release.mjs';
@@ -34,6 +35,11 @@ test('auto-bumps when local version still matches npm', () => {
     targetVersion: '0.3.5',
     mode: 'bump',
   });
+});
+
+test('creates a release commit only for fresh bumps', () => {
+  assert.equal(shouldCreateReleaseCommit('bump'), true);
+  assert.equal(shouldCreateReleaseCommit('resume'), false);
 });
 
 test('rejects ambiguous multi-version drift ahead of npm', () => {
