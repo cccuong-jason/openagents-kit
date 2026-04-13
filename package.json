@@ -1,6 +1,6 @@
 {
   "name": "openagents-kit",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Universal installer for the OpenAgents Kit native CLI.",
   "repository": {
     "type": "git",
