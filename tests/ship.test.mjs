@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  buildVerificationCommands,
   computeNextPatchVersion,
   createShipPlan,
   filterUnexpectedDirtyPaths,
@@ -117,4 +118,13 @@ test('blocks ship outside main', () => {
 
   assert.equal(plan.ok, false);
   assert.match(plan.message, /Refusing to ship from branch "feat\/test"/);
+});
+
+test('verification suite uses a hermetic catalog smoke check', () => {
+  const catalogCommand = buildVerificationCommands().find((entry) => (
+    entry.command === 'cargo' && entry.args.includes('catalog')
+  ));
+
+  assert.ok(catalogCommand);
+  assert.deepEqual(catalogCommand.args.slice(-2), ['catalog', '--help']);
 });

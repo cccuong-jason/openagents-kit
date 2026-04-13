@@ -293,17 +293,26 @@ function verifyReleaseGuard(nextVersion, publishedVersion) {
   }
 }
 
-function runVerificationSuite() {
-  runLoud('node', ['--test', 'tests/release-guard.test.mjs', 'tests/ship.test.mjs', 'tests/workflow-release.test.mjs']);
-  runLoud('npm', ['run', 'release:check']);
+export function buildVerificationCommands() {
+  return [
+    { command: 'node', args: ['--test', 'tests/release-guard.test.mjs', 'tests/ship.test.mjs', 'tests/workflow-release.test.mjs'] },
+    { command: 'npm', args: ['run', 'release:check'] },
+    { command: 'cargo', args: ['fmt', '--all'] },
+    { command: 'cargo', args: ['test', '--workspace', '--all-features'] },
+    { command: 'cargo', args: ['clippy', '--workspace', '--all-targets', '--all-features', '--', '-D', 'warnings'] },
+    { command: 'cargo', args: ['run', '-p', 'openagents-tui', '--bin', 'openagents-kit', '--', '--help'] },
+    { command: 'cargo', args: ['run', '-p', 'openagents-tui', '--bin', 'openagents-kit', '--', 'setup', '--dry-run'] },
+    { command: 'cargo', args: ['run', '-p', 'openagents-tui', '--bin', 'openagents-kit', '--', 'catalog', '--help'] },
+  ];
+}
 
+function runVerificationSuite() {
   const { cargoBin, env } = resolveCargoExecution();
-  runLoud(cargoBin, ['fmt', '--all'], { env });
-  runLoud(cargoBin, ['test', '--workspace', '--all-features'], { env });
-  runLoud(cargoBin, ['clippy', '--workspace', '--all-targets', '--all-features', '--', '-D', 'warnings'], { env });
-  runLoud(cargoBin, ['run', '-p', 'openagents-tui', '--bin', 'openagents-kit', '--', '--help'], { env });
-  runLoud(cargoBin, ['run', '-p', 'openagents-tui', '--bin', 'openagents-kit', '--', 'setup', '--dry-run'], { env });
-  runLoud(cargoBin, ['run', '-p', 'openagents-tui', '--bin', 'openagents-kit', '--', 'catalog'], { env });
+  for (const step of buildVerificationCommands()) {
+    const command = step.command === 'cargo' ? cargoBin : step.command;
+    const commandEnv = step.command === 'cargo' ? env : process.env;
+    runLoud(command, step.args, { env: commandEnv });
+  }
 }
 
 function runGitAndPublish(nextVersion) {
