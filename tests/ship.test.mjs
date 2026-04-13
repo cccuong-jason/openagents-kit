@@ -7,7 +7,9 @@ import {
   createShipPlan,
   filterUnexpectedDirtyPaths,
   parseShipArgs,
+  resolveLatestTaggedVersion,
   shouldCreateReleaseCommit,
+  selectPublishedBaselineVersion,
   resolveReleaseVersionState,
   resolveChildCommand,
 } from '../scripts/ship-release.mjs';
@@ -15,6 +17,17 @@ import {
 test('computes the next patch version from the published npm version', () => {
   assert.equal(computeNextPatchVersion('0.3.4'), '0.3.5');
   assert.equal(computeNextPatchVersion('1.9.9'), '1.9.10');
+});
+
+test('finds the highest semantic version from release tags', () => {
+  assert.equal(resolveLatestTaggedVersion(['v0.3.4', 'v0.3.5', 'notes']), '0.3.5');
+  assert.equal(resolveLatestTaggedVersion(['release', 'foo']), null);
+});
+
+test('uses the newer of npm and git tag release baselines', () => {
+  assert.equal(selectPublishedBaselineVersion('0.3.4', '0.3.5'), '0.3.5');
+  assert.equal(selectPublishedBaselineVersion('0.3.6', '0.3.5'), '0.3.6');
+  assert.equal(selectPublishedBaselineVersion('0.3.4', null), '0.3.4');
 });
 
 test('resumes a pending release when local version is exactly one patch ahead of npm', () => {

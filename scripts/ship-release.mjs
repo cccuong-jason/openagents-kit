@@ -42,6 +42,25 @@ export function computeNextPatchVersion(version) {
   return `${major}.${minor}.${Number.parseInt(patch, 10) + 1}`;
 }
 
+export function resolveLatestTaggedVersion(tagNames) {
+  return tagNames
+    .map((tagName) => {
+      const match = tagName.trim().match(/^v(\d+\.\d+\.\d+)$/);
+      return match ? match[1] : null;
+    })
+    .filter(Boolean)
+    .sort(compareVersions)
+    .at(-1) ?? null;
+}
+
+export function selectPublishedBaselineVersion(npmVersion, taggedVersion) {
+  if (!taggedVersion) {
+    return npmVersion;
+  }
+
+  return compareVersions(taggedVersion, npmVersion) > 0 ? taggedVersion : npmVersion;
+}
+
 export function resolveReleaseVersionState(packageVersion, cargoVersion, publishedVersion) {
   if (packageVersion !== cargoVersion) {
     throw new Error(
@@ -148,7 +167,7 @@ export function createShipPlan({
     ok: true,
     message: [
       `About to ship openagents-kit ${nextVersion}`,
-      `Published npm version: ${publishedVersion}`,
+      `Published release baseline: ${publishedVersion}`,
       `Mode: ${mode}`,
       `Will update: ${VERSIONED_FILES.join(', ')}`,
       'Will run: release guard, Rust verification, git commit/tag/push, npm publish, npm version verify',
@@ -218,6 +237,13 @@ function getStatusLines() {
   return run('git', ['status', '--short'])
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
+    .filter(Boolean);
+}
+
+function getTagNames() {
+  return run('git', ['tag', '--list', 'v*'])
+    .split(/\r?\n/)
+    .map((line) => line.trim())
     .filter(Boolean);
 }
 
@@ -349,12 +375,14 @@ export async function main(argv = process.argv.slice(2)) {
   const packageVersion = readPackageVersion(readFile(PACKAGE_JSON_PATH));
   const cargoVersion = readCargoVersion(readFile(CARGO_TOML_PATH));
   const publishedVersion = resolvePublishedVersion();
-  const versionState = ensureVersionsAreAlignedWithPublished(packageVersion, cargoVersion, publishedVersion);
+  const taggedVersion = resolveLatestTaggedVersion(getTagNames());
+  const baselineVersion = selectPublishedBaselineVersion(publishedVersion, taggedVersion);
+  const versionState = ensureVersionsAreAlignedWithPublished(packageVersion, cargoVersion, baselineVersion);
   const nextVersion = versionState.targetVersion;
   const branch = getCurrentBranch();
   const dirtyPaths = getStatusLines();
   const plan = createShipPlan({
-    publishedVersion,
+    publishedVersion: baselineVersion,
     nextVersion,
     branch,
     dirtyPaths,
@@ -368,8 +396,12 @@ export async function main(argv = process.argv.slice(2)) {
 
   console.log(plan.message);
 
+  if (taggedVersion && compareVersions(taggedVersion, publishedVersion) !== 0) {
+    console.log(`Latest Git tag version: ${taggedVersion}`);
+  }
+
   if (versionState.mode === 'resume') {
-    console.log(`Resuming pending release ${nextVersion} because npm is still on ${publishedVersion}.`);
+    console.log(`Resuming pending release ${nextVersion} because the published baseline is still on ${baselineVersion}.`);
   }
 
   if (dryRun) {
