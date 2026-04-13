@@ -313,6 +313,10 @@ export function buildVerificationCommands() {
   ];
 }
 
+export function shouldCreateReleaseCommit(mode) {
+  return mode === 'bump';
+}
+
 function runVerificationSuite() {
   const { cargoBin, env } = resolveCargoExecution();
   for (const step of buildVerificationCommands()) {
@@ -322,9 +326,11 @@ function runVerificationSuite() {
   }
 }
 
-function runGitAndPublish(nextVersion) {
-  runLoud('git', ['add', ...VERSIONED_FILES]);
-  runLoud('git', ['commit', '-m', `chore: release v${nextVersion}`]);
+function runGitAndPublish(nextVersion, mode) {
+  if (shouldCreateReleaseCommit(mode)) {
+    runLoud('git', ['add', ...VERSIONED_FILES]);
+    runLoud('git', ['commit', '-m', `chore: release v${nextVersion}`]);
+  }
   runLoud('git', ['push', 'origin', 'main']);
   runLoud('git', ['tag', '-a', `v${nextVersion}`, '-m', `v${nextVersion}`]);
   runLoud('git', ['push', 'origin', `v${nextVersion}`]);
@@ -382,7 +388,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
   verifyReleaseGuard(nextVersion, publishedVersion);
   runVerificationSuite();
-  runGitAndPublish(nextVersion);
+  runGitAndPublish(nextVersion, versionState.mode);
   verifyPublishedVersion(nextVersion);
 
   console.log(`Ship complete: openagents-kit ${nextVersion}`);
