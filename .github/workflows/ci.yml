@@ -23,6 +23,9 @@ jobs:
         with:
           node-version: 22
 
+      - name: Test release tooling
+        run: npm run test:release-tooling
+
       - name: Test npx installer
         run: node tests/npx-installer.test.mjs
 

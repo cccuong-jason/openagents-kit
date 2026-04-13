@@ -14,6 +14,7 @@
     "ship": "node scripts/ship-release.mjs",
     "release:check": "node scripts/release-guard.mjs",
     "release:bump": "node scripts/bump-version.mjs",
+    "test:release-tooling": "node --test tests/release-guard.test.mjs tests/ship.test.mjs tests/workflow-release.test.mjs tests/workflow-ci.test.mjs",
     "prepublishOnly": "node scripts/release-guard.mjs"
   },
   "bin": {
