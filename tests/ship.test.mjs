@@ -71,6 +71,18 @@ test('parses npm config fallback flags', () => {
   assert.deepEqual(parseShipArgs([], { npm_config_yes: 'true', npm_config_dry_run: 'true' }), { yes: true, dryRun: true });
 });
 
+test('ignores ambient npm config flags unless they are passed explicitly', () => {
+  process.env.npm_config_yes = 'true';
+  process.env.npm_config_dry_run = 'true';
+
+  try {
+    assert.deepEqual(parseShipArgs([]), { yes: false, dryRun: false });
+  } finally {
+    delete process.env.npm_config_yes;
+    delete process.env.npm_config_dry_run;
+  }
+});
+
 test('rejects unknown ship flags', () => {
   assert.throws(() => parseShipArgs(['--wat']), /Unknown argument "--wat"/);
 });
