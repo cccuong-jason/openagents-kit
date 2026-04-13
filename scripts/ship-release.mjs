@@ -74,8 +74,15 @@ export function resolveReleaseVersionState(packageVersion, cargoVersion, publish
   );
 }
 
-export function parseShipArgs(argv) {
-  const flags = { yes: false, dryRun: false };
+function isTruthyConfigValue(value) {
+  return value === 'true' || value === '1' || value === true;
+}
+
+export function parseShipArgs(argv, env = process.env) {
+  const flags = {
+    yes: isTruthyConfigValue(env.npm_config_yes),
+    dryRun: isTruthyConfigValue(env.npm_config_dry_run),
+  };
 
   for (const arg of argv) {
     if (arg === '--yes') {

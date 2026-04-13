@@ -65,6 +65,12 @@ test('parses ship flags', () => {
   assert.deepEqual(parseShipArgs(['--yes', '--dry-run']), { yes: true, dryRun: true });
 });
 
+test('parses npm config fallback flags', () => {
+  assert.deepEqual(parseShipArgs([], { npm_config_dry_run: 'true' }), { yes: false, dryRun: true });
+  assert.deepEqual(parseShipArgs([], { npm_config_yes: 'true' }), { yes: true, dryRun: false });
+  assert.deepEqual(parseShipArgs([], { npm_config_yes: 'true', npm_config_dry_run: 'true' }), { yes: true, dryRun: true });
+});
+
 test('rejects unknown ship flags', () => {
   assert.throws(() => parseShipArgs(['--wat']), /Unknown argument "--wat"/);
 });
