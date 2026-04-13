@@ -78,7 +78,7 @@ function isTruthyConfigValue(value) {
   return value === 'true' || value === '1' || value === true;
 }
 
-export function parseShipArgs(argv, env = process.env) {
+export function parseShipArgs(argv, env = {}) {
   const flags = {
     yes: isTruthyConfigValue(env.npm_config_yes),
     dryRun: isTruthyConfigValue(env.npm_config_dry_run),
@@ -339,7 +339,7 @@ function verifyPublishedVersion(nextVersion) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
-  const { yes, dryRun } = parseShipArgs(argv);
+  const { yes, dryRun } = parseShipArgs(argv, process.env);
   const packageVersion = readPackageVersion(readFile(PACKAGE_JSON_PATH));
   const cargoVersion = readCargoVersion(readFile(CARGO_TOML_PATH));
   const publishedVersion = resolvePublishedVersion();
